@@ -2,6 +2,8 @@ services:
   bot:
     build:
       context: ./bot
+    env_file:
+      - .env
     volumes:
       - ./bot/app:/app/app
       - ./bot/strategies:/app/strategies
