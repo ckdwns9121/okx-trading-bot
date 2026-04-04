@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next
+node_modules/
+.next/
+out/
+coverage/
+
+# Local runtime/state
+.omx/
+.omc/
+.claude/
+*.log
+
+# OS
+.DS_Store
+
+# Docker local volumes/temp
+pgdata/
+
+# TypeScript build cache
+*.tsbuildinfo
