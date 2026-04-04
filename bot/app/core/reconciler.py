@@ -100,7 +100,10 @@ class Reconciler:
                 for local_order in pending_local_orders:
                     if local_order.cl_ord_id not in exchange_order_ids:
                         try:
-                            ex_order = await self._client.get_order_by_cl_ord_id(local_order.cl_ord_id)
+                            ex_order = await self._client.get_order_by_cl_ord_id(
+                                local_order.cl_ord_id,
+                                pair=local_order.pair,
+                            )
                             ex_state = ex_order.get("state", "unknown")
                             new_status = (
                                 "filled" if ex_state in ("filled", "partially_filled")

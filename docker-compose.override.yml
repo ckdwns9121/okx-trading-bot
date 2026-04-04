@@ -1,0 +1,21 @@
+services:
+  bot:
+    build:
+      context: ./bot
+    volumes:
+      - ./bot/app:/app/app
+      - ./bot/strategies:/app/strategies
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+
+  dashboard:
+    build:
+      context: ./dashboard
+      target: builder
+    volumes:
+      - ./dashboard/src:/app/src
+    command: npx next dev -H 0.0.0.0 -p 3000
+    environment:
+      NEXT_PUBLIC_API_URL: http://bot:8000
+      API_URL: http://bot:8000

@@ -202,6 +202,7 @@ class OKXClient:
                     "low": float(row[3]),
                     "close": float(row[4]),
                     "volume": float(row[5]),
+                    "confirm": row[8] if len(row) > 8 else "1",
                 }
             )
         return candles
@@ -311,12 +312,19 @@ class OKXClient:
         )
         return result.get("data", [])
 
-    async def get_order_by_cl_ord_id(self, cl_ord_id: str) -> dict[str, Any]:
+    async def get_order_by_cl_ord_id(
+        self,
+        cl_ord_id: str,
+        pair: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Fetch an order by client order ID."""
+        params: dict[str, Any] = {"clOrdId": cl_ord_id}
+        if pair:
+            params["instId"] = pair
         result = await self._request(
             "GET",
             "/api/v5/trade/order",
-            params={"clOrdId": cl_ord_id},
+            params=params,
         )
         data: list[dict[str, Any]] = result.get("data", [])
         if not data:
