@@ -33,6 +33,10 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return self._enabled
 
+    @property
+    def chat_id(self) -> str:
+        return self._chat_id
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
@@ -66,3 +70,30 @@ class TelegramNotifier:
         except Exception as exc:
             logger.warning("telegram_send_exception", error=str(exc))
             return False
+
+    async def get_updates(self, *, offset: int | None = None, timeout: int = 25) -> list[dict[str, Any]]:
+        """Fetch bot updates via long polling."""
+        if not self._enabled:
+            return []
+        try:
+            client = await self._get_client()
+            url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"
+            payload: dict[str, Any] = {
+                "timeout": max(1, min(timeout, 60)),
+                "allowed_updates": ["message", "edited_message"],
+            }
+            if offset is not None:
+                payload["offset"] = offset
+            response = await client.post(url, json=payload)
+            data = response.json()
+            if response.status_code != 200 or data.get("ok") is not True:
+                logger.warning(
+                    "telegram_get_updates_failed",
+                    status_code=response.status_code,
+                    body=response.text[:300],
+                )
+                return []
+            return data.get("result", []) or []
+        except Exception as exc:
+            logger.warning("telegram_get_updates_exception", error=str(exc))
+            return []

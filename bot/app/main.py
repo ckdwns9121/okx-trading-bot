@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     live_engine = None
     circuit_breaker = None
     telegram_notifier = None
+    telegram_command_poller = None
 
     try:
         from app.core.telegram_notifier import TelegramNotifier
@@ -116,6 +117,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("live_engine_unavailable")
         app.state.live_engine = None
 
+    # Telegram command poller (optional)
+    try:
+        from app.core.telegram_command_poller import TelegramCommandPoller
+        from app.db.database import AsyncSessionLocal
+
+        telegram_command_poller = TelegramCommandPoller(
+            notifier=telegram_notifier,
+            session_factory=AsyncSessionLocal,
+            app_state=app.state,
+            poll_timeout_sec=settings.TELEGRAM_POLL_TIMEOUT_SEC,
+            enabled=settings.TELEGRAM_COMMANDS_ENABLED,
+        )
+        app.state.telegram_command_poller = telegram_command_poller
+        await telegram_command_poller.start()
+        logger.info(
+            "telegram_command_poller_initialised",
+            enabled=telegram_command_poller.enabled,
+        )
+    except ImportError:
+        logger.warning("telegram_command_poller_unavailable")
+        app.state.telegram_command_poller = None
+
     logger.info("bot_started", version=_VERSION, mode=settings.OKX_MODE)
 
     # ------------------------------------------------------------------ #
@@ -136,6 +159,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.info("live_engine_stopped")
         except Exception as exc:
             logger.error("live_engine_stop_error", error=str(exc))
+
+    if telegram_command_poller is not None:
+        try:
+            await telegram_command_poller.stop()
+            logger.info("telegram_command_poller_stopped")
+        except Exception as exc:
+            logger.error("telegram_command_poller_stop_error", error=str(exc))
 
     try:
         await okx_client.close()

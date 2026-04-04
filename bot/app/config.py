@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     TELEGRAM_NOTIFICATIONS_ENABLED: bool = True
     TELEGRAM_BOT_TOKEN: str | None = None
     TELEGRAM_CHAT_ID: str | None = None
+    TELEGRAM_COMMANDS_ENABLED: bool = True
+    TELEGRAM_POLL_TIMEOUT_SEC: int = 25
 
     @property
     def okx_base_url(self) -> str:
