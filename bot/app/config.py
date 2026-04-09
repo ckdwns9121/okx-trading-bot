@@ -23,6 +23,19 @@ class Settings(BaseSettings):
     TELEGRAM_COMMANDS_ENABLED: bool = True
     TELEGRAM_POLL_TIMEOUT_SEC: int = 25
 
+    CHRONOS_ENABLED: bool = False
+    CHRONOS_MODEL_ID: str = "amazon/chronos-2"
+    CHRONOS_DEVICE_MAP: str = "cpu"
+    CHRONOS_TIMEOUT_SEC: float = 12.0
+    CHRONOS_PREDICTION_LENGTH: int = 8
+    CHRONOS_MIN_CONTEXT: int = 256
+    CHRONOS_ENTRY_EDGE_PCT: float = 0.25
+    CHRONOS_EXIT_EDGE_PCT: float = 0.08
+    CHRONOS_MAX_UNCERTAINTY_PCT: float = 1.2
+    CHRONOS_BASE_SIZE_PCT: float = 100.0
+    CHRONOS_MIN_SIZE_PCT: float = 25.0
+    CHRONOS_REGIME_CONFIDENCE_MIN: float = 0.55
+
     @property
     def okx_base_url(self) -> str:
         return "https://www.okx.com"

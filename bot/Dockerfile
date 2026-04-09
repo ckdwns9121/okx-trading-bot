@@ -2,11 +2,18 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
+ARG INSTALL_ML_EXTRAS=false
 
+COPY pyproject.toml ./
 COPY app/ ./app/
 COPY strategies/ ./strategies/
+
+RUN if [ "$INSTALL_ML_EXTRAS" = "true" ]; then \
+      pip install --no-cache-dir ".[ml]"; \
+    else \
+      pip install --no-cache-dir .; \
+    fi
+
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
