@@ -25,10 +25,8 @@ import type {
   TradeAnalytics,
 } from "./types";
 
-const isServer = typeof window === "undefined";
-const API_BASE = isServer
-  ? (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000")
-  : "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL?.toString() || "http://localhost:8000";
 
 async function fetchJson<T>(
   path: string,

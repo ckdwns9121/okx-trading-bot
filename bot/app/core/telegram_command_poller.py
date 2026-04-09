@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.core.runtime_events import list_events
 from app.logging_config import get_logger
 from app.models.position import Position
+from app.models.runtime_event import RuntimeEvent
 from app.models.trade import Trade
 
 logger = get_logger(__name__)
@@ -220,7 +221,27 @@ class TelegramCommandPoller:
             return f"pnl 조회 실패: {exc}"
 
     async def _cmd_logs(self) -> str:
-        items = list_events(limit=8)
+        items: list[dict[str, Any]] = []
+        try:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(RuntimeEvent)
+                    .order_by(RuntimeEvent.id.desc())
+                    .limit(8)
+                )
+                rows = list(result.scalars().all())
+            items = [
+                {
+                    "timestamp": row.timestamp.isoformat(),
+                    "event": row.event,
+                    "pair": row.pair,
+                }
+                for row in reversed(rows)
+            ]
+        except Exception:
+            # Fallback to in-memory runtime buffer if DB read fails.
+            items = list_events(limit=8)
+
         if not items:
             return "최근 이벤트 없음"
         lines = ["recent logs:"]

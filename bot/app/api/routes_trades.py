@@ -21,11 +21,21 @@ from app.db.database import get_db
 from app.logging_config import get_logger
 from app.models.order import Order
 from app.models.position import Position
+from app.models.strategy_config import StrategyConfig
 from app.models.trade import Trade
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api", tags=["trades"])
+
+
+def _normalize_direction(direction: str | None) -> str:
+    value = (direction or "").strip().lower()
+    if value in ("buy", "long"):
+        return "long"
+    if value in ("sell", "short"):
+        return "short"
+    return value or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +141,46 @@ async def list_trades(
 
     result = await db.execute(stmt)
     trades = result.scalars().all()
-    return [TradeOut.model_validate(t) for t in trades]
+
+    # Fallback strategy labels for legacy rows recorded as "unknown".
+    fallback_pairs = {
+        t.pair
+        for t in trades
+        if (t.strategy_name or "").strip().lower() in ("", "unknown")
+    }
+    fallback_strategy_by_pair: dict[str, str] = {}
+    if fallback_pairs:
+        cfg_result = await db.execute(
+            select(StrategyConfig.pair, StrategyConfig.strategy_name).where(
+                StrategyConfig.is_active.is_(True),
+                StrategyConfig.pair.in_(fallback_pairs),
+            )
+        )
+        candidates: dict[str, set[str]] = {}
+        for pair_name, strategy_name in cfg_result.all():
+            candidates.setdefault(str(pair_name), set()).add(str(strategy_name))
+        fallback_strategy_by_pair = {
+            pair_name: next(iter(names))
+            for pair_name, names in candidates.items()
+            if len(names) == 1
+        }
+
+    rows: list[TradeOut] = []
+    for trade in trades:
+        item = TradeOut.model_validate(trade)
+        strategy_name = item.strategy_name
+        if (strategy_name or "").strip().lower() in ("", "unknown"):
+            strategy_name = fallback_strategy_by_pair.get(item.pair, strategy_name)
+
+        rows.append(
+            item.model_copy(
+                update={
+                    "direction": _normalize_direction(item.direction),
+                    "strategy_name": strategy_name,
+                }
+            )
+        )
+    return rows
 
 
 @router.get(
@@ -210,7 +259,10 @@ async def list_positions(
 ) -> list[PositionOut]:
     result = await db.execute(select(Position).order_by(Position.opened_at.desc()))
     positions = result.scalars().all()
-    return [PositionOut.model_validate(p) for p in positions]
+    return [
+        PositionOut.model_validate(p).model_copy(update={"direction": _normalize_direction(p.direction)})
+        for p in positions
+    ]
 
 
 @router.get(

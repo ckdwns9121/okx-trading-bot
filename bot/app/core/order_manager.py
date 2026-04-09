@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import select
+
 from app.config import Settings
 from app.core.circuit_breaker import CircuitBreaker
 from app.core.runtime_events import add_event
@@ -12,6 +14,7 @@ from app.core.strategy_base import Signal, TradeSignal
 from app.db import repository as repo
 from app.exchange.okx_client import OKXClient
 from app.logging_config import get_logger
+from app.models.strategy_config import StrategyConfig
 
 logger = get_logger(__name__)
 
@@ -74,6 +77,30 @@ class OrderManager:
     def _signal_to_side(signal: Signal) -> str:
         return "buy" if signal == Signal.LONG else "sell"
 
+    @staticmethod
+    def _normalize_trade_direction(direction: str | None) -> str:
+        value = (direction or "").strip().lower()
+        if value in ("buy", "long"):
+            return "long"
+        if value in ("sell", "short"):
+            return "short"
+        return value or "unknown"
+
+    async def _resolve_strategy_name(self, session, pair: str, preferred: str | None) -> str:
+        if preferred and preferred.strip():
+            return preferred.strip()
+
+        result = await session.execute(
+            select(StrategyConfig.strategy_name).where(
+                StrategyConfig.pair == pair,
+                StrategyConfig.is_active.is_(True),
+            )
+        )
+        names = sorted({str(name) for name in result.scalars().all() if name})
+        if len(names) == 1:
+            return names[0]
+        return "unknown"
+
     async def _fetch_order_fill(self, cl_ord_id: str, pair: str) -> tuple[float, float]:
         """Best-effort fetch of (avg_fill_price, filled_contracts)."""
         for _ in range(3):
@@ -93,7 +120,13 @@ class OrderManager:
             await asyncio.sleep(0.3)
         return 0.0, 0.0
 
-    async def open_position(self, pair: str, signal: TradeSignal) -> Optional[dict]:
+    async def open_position(
+        self,
+        pair: str,
+        signal: TradeSignal,
+        *,
+        strategy_name: str | None = None,
+    ) -> Optional[dict]:
         if not await self._cb.check():
             logger.warning("open_position_blocked_circuit_breaker", pair=pair)
             add_event(
@@ -104,7 +137,7 @@ class OrderManager:
             )
             return None
 
-        log = logger.bind(pair=pair, signal=signal.signal.value)
+        log = logger.bind(pair=pair, signal=signal.signal.value, strategy=strategy_name or "unknown")
         created_order_id: Optional[uuid.UUID] = None
 
         try:
@@ -276,7 +309,12 @@ class OrderManager:
                     log.error("open_position_reject_mark_failed", error=str(update_exc))
             return None
 
-    async def close_position(self, pair: str) -> Optional[dict]:
+    async def close_position(
+        self,
+        pair: str,
+        *,
+        strategy_name: str | None = None,
+    ) -> Optional[dict]:
         log = logger.bind(pair=pair)
         created_order_id: Optional[uuid.UUID] = None
         local_position = None
@@ -289,9 +327,9 @@ class OrderManager:
                     return None
                 local_position = position
 
-                direction = position.direction
-                pos_side = "long" if direction == "buy" else "short"
-                close_side = "sell" if direction == "buy" else "buy"
+                direction = self._normalize_trade_direction(position.direction)
+                pos_side = "long" if direction == "long" else "short"
+                close_side = "sell" if direction == "long" else "buy"
                 close_contracts = max(1, int(round(float(position.quantity))))
 
                 cl_ord_id = uuid.uuid4().hex
@@ -343,15 +381,17 @@ class OrderManager:
                 entry_contracts = float(position.quantity)
                 qty_for_pnl = min(entry_contracts, qty_contracts) if entry_contracts > 0 else qty_contracts
                 ct_val = self._get_contract_value(pair)
-                if direction == "buy":
+                if direction == "long":
                     pnl = (exit_price - float(position.entry_price)) * qty_for_pnl * ct_val
                 else:
                     pnl = (float(position.entry_price) - exit_price) * qty_for_pnl * ct_val
                 cost_basis = float(position.entry_price) * qty_for_pnl * ct_val
                 pnl_pct = (pnl / cost_basis) * 100.0 if cost_basis > 0 else 0.0
 
+                resolved_strategy = await self._resolve_strategy_name(session, pair, strategy_name)
+
                 await repo.create_trade(session, {
-                    "strategy_name": "unknown", "pair": pair,
+                    "strategy_name": resolved_strategy, "pair": pair,
                     "direction": direction, "entry_price": position.entry_price,
                     "exit_price": exit_price, "quantity": qty_for_pnl,
                     "leverage": position.leverage, "pnl": pnl, "pnl_pct": pnl_pct,
@@ -376,7 +416,7 @@ class OrderManager:
                     [
                         f"[OKX BOT][{mode_label}] CLOSE",
                         f"pair: {pair}",
-                        f"side: {'sell' if local_position and local_position.direction == 'buy' else 'buy'}",
+                        f"side: {'sell' if local_position and self._normalize_trade_direction(local_position.direction) == 'long' else 'buy'}",
                         f"qty: {local_position.quantity if local_position else '-'}",
                         f"leverage: {local_position.leverage if local_position else '-'}x",
                         f"exit_price: {exit_price:.4f}",
