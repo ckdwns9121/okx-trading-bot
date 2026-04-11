@@ -42,6 +42,10 @@ class BacktestRequest(BaseModel):
     fee_rate: float = Field(default=0.0005, ge=0, description="Taker fee rate, e.g. 0.0005")
     slippage_pct: float = Field(default=0.0, ge=0, description="Slippage as decimal, e.g. 0.001")
     cooldown_candles: int = Field(default=0, ge=0, description="Number of candles to skip re-entry after stop-loss")
+    parameters_json: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Optional strategy parameters passed to strategy.configure(...)",
+    )
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -191,7 +195,7 @@ async def submit_backtest(
 
         strategy_cls = strat_registry.get(body.strategy_name)
         strategy_inst = strategy_cls()
-        strategy_inst.configure({})
+        strategy_inst.configure(body.parameters_json or {})
 
         engine = BacktestEngine(db_session=session)
         bt_result = await engine.run(
