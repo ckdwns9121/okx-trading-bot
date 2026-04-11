@@ -48,6 +48,7 @@ class ChronosForecastService:
         self._pipeline = None
         self._load_lock = threading.Lock()
         self._infer_lock = threading.Lock()
+        self._infer_lock_timeout_sec = 2.0
 
         self._dep_warned = False
         self._load_error: str | None = None
@@ -142,12 +143,23 @@ class ChronosForecastService:
             return timedelta(minutes=1)
         tf = timeframe.strip()
         try:
-            if tf.endswith("m"):
-                return timedelta(minutes=max(1, int(tf[:-1])))
-            if tf.endswith("H"):
-                return timedelta(hours=max(1, int(tf[:-1])))
-            if tf.endswith("D"):
-                return timedelta(days=max(1, int(tf[:-1])))
+            if not tf:
+                return timedelta(minutes=1)
+
+            unit = tf[-1]
+            value = max(1, int(tf[:-1]))
+
+            # Keep "m" (minutes) and "M" (months) distinct by case.
+            if unit == "m":
+                return timedelta(minutes=value)
+            if unit in ("h", "H"):
+                return timedelta(hours=value)
+            if unit in ("d", "D"):
+                return timedelta(days=value)
+            if unit in ("w", "W"):
+                return timedelta(weeks=value)
+            if unit == "M":
+                return timedelta(days=30 * value)
         except Exception:
             pass
         return timedelta(minutes=1)
@@ -239,9 +251,17 @@ class ChronosForecastService:
             }
         )
 
-        lock_acquired = self._infer_lock.acquire(blocking=False)
+        # Serialize concurrent inference requests, but cap wait time to avoid
+        # thread buildup when callers timeout/cancel upstream.
+        lock_acquired = self._infer_lock.acquire(timeout=self._infer_lock_timeout_sec)
         if not lock_acquired:
-            logger.debug("chronos_inference_busy_skip")
+            logger.debug(
+                "chronos_inference_busy_timeout",
+                timeout_sec=self._infer_lock_timeout_sec,
+            )
+            # Prefer last known model output over hard fallback when contention is high.
+            if self._last_result is not None:
+                return self._last_result
             return None
 
         try:

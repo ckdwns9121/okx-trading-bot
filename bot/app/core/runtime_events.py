@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 _MAX_EVENTS = 500
 _MAX_PERSIST_QUEUE = 2000
+_MAX_PERSIST_BATCH = 50
+_PERSIST_FLUSH_TIMEOUT_SEC = 0.2
 
 _events: deque[dict[str, Any]] = deque(maxlen=_MAX_EVENTS)
 _lock = Lock()
@@ -135,56 +137,86 @@ async def _persist_worker() -> None:
     try:
         while True:
             payload = await queue.get()
+            batch: list[dict[str, Any]] = [payload]
+
+            # Short coalescing window for batch DB inserts under bursty traffic.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _PERSIST_FLUSH_TIMEOUT_SEC
+            while len(batch) < _MAX_PERSIST_BATCH:
+                timeout = deadline - loop.time()
+                if timeout <= 0:
+                    break
+                try:
+                    batch.append(await asyncio.wait_for(queue.get(), timeout=timeout))
+                except asyncio.TimeoutError:
+                    break
+
             try:
-                await _persist_payload(payload)
+                await _persist_payloads(batch)
             except Exception as exc:
                 logger.warning(
                     "runtime_event_persist_failed",
-                    runtime_event=payload.get("event"),
+                    runtime_event=batch[0].get("event") if batch else None,
+                    batch_size=len(batch),
                     error=str(exc),
                 )
             finally:
-                queue.task_done()
+                for _ in batch:
+                    queue.task_done()
     except asyncio.CancelledError:
         # Best-effort flush of remaining queue entries before fully stopping.
         while queue is not None and not queue.empty():
+            batch: list[dict[str, Any]] = []
             try:
-                payload = queue.get_nowait()
+                while len(batch) < _MAX_PERSIST_BATCH and not queue.empty():
+                    batch.append(queue.get_nowait())
             except asyncio.QueueEmpty:
+                pass
+
+            if not batch:
                 break
+
             try:
-                await _persist_payload(payload)
+                await _persist_payloads(batch)
             except Exception:
                 pass
             finally:
-                queue.task_done()
+                for _ in batch:
+                    queue.task_done()
         raise
 
 
-async def _persist_payload(payload: dict[str, Any]) -> None:
+async def _persist_payloads(payloads: list[dict[str, Any]]) -> None:
     if _session_factory is None:
         return
+    if not payloads:
+        return
 
-    ts_raw = payload.get("timestamp")
-    timestamp: datetime
-    if isinstance(ts_raw, str):
-        try:
-            timestamp = datetime.fromisoformat(ts_raw)
-        except ValueError:
+    rows: list[RuntimeEvent] = []
+    for payload in payloads:
+        ts_raw = payload.get("timestamp")
+        timestamp: datetime
+        if isinstance(ts_raw, str):
+            try:
+                timestamp = datetime.fromisoformat(ts_raw)
+            except ValueError:
+                timestamp = datetime.now(timezone.utc)
+        else:
             timestamp = datetime.now(timezone.utc)
-    else:
-        timestamp = datetime.now(timezone.utc)
+
+        rows.append(
+            RuntimeEvent(
+                timestamp=timestamp,
+                level=str(payload.get("level") or "info"),
+                event=str(payload.get("event") or "event"),
+                pair=payload.get("pair"),
+                strategy=payload.get("strategy"),
+                timeframe=payload.get("timeframe"),
+                message=payload.get("message"),
+                details_json=(payload.get("details") or {}),
+            )
+        )
 
     async with _session_factory() as session:
-        row = RuntimeEvent(
-            timestamp=timestamp,
-            level=str(payload.get("level") or "info"),
-            event=str(payload.get("event") or "event"),
-            pair=payload.get("pair"),
-            strategy=payload.get("strategy"),
-            timeframe=payload.get("timeframe"),
-            message=payload.get("message"),
-            details_json=(payload.get("details") or {}),
-        )
-        session.add(row)
+        session.add_all(rows)
         await session.commit()

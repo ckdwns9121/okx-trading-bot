@@ -171,15 +171,9 @@ async def list_trades(
         strategy_name = item.strategy_name
         if (strategy_name or "").strip().lower() in ("", "unknown"):
             strategy_name = fallback_strategy_by_pair.get(item.pair, strategy_name)
-
-        rows.append(
-            item.model_copy(
-                update={
-                    "direction": _normalize_direction(item.direction),
-                    "strategy_name": strategy_name,
-                }
-            )
-        )
+        item.direction = _normalize_direction(item.direction)
+        item.strategy_name = strategy_name or "unknown"
+        rows.append(item)
     return rows
 
 
