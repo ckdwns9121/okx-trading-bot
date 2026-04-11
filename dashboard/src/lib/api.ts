@@ -133,13 +133,24 @@ export async function getTradingStatus(): Promise<PairStatus[]> {
       error?: string | null;
     }>;
   }>("/api/trading/status");
-  return (data.pairs ?? []).map((p) => ({
+  return (data.pairs ?? []).map((p) => {
+    const normalizedState =
+      p.state === "failed"
+        ? "error"
+        : p.state === "running" ||
+            p.state === "stopped" ||
+            p.state === "error" ||
+            p.state === "idle"
+          ? p.state
+          : "unknown";
+    return {
     pair: p.pair,
     strategy_name: p.strategy || "",
     timeframe: p.timeframe ?? null,
-    status: (p.state === "running" || p.state === "stopped" || p.state === "error" || p.state === "idle" ? p.state : "unknown") as PairStatus["status"],
+    status: normalizedState as PairStatus["status"],
     error: p.error ?? null,
-  }));
+  };
+  });
 }
 
 export async function getTradingLogs(limit = 120): Promise<TradingLogEvent[]> {

@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.runtime_events import add_event, list_events
+from app.db.database import get_db
 from app.logging_config import get_logger
+from app.models.runtime_event import RuntimeEvent
 
 logger = get_logger(__name__)
 
@@ -225,7 +230,37 @@ async def reset_circuit_breaker(request: Request) -> CircuitBreakerResetResponse
 )
 async def get_trading_logs(
     limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
 ) -> TradingLogsResponse:
+    # Primary source: durable DB logs (survive restarts)
+    try:
+        result = await db.execute(
+            select(RuntimeEvent)
+            .order_by(RuntimeEvent.id.desc())
+            .limit(limit)
+        )
+        rows = list(result.scalars().all())
+
+        if rows:
+            items = [
+                TradingLogEvent(
+                    id=row.id,
+                    timestamp=row.timestamp.isoformat(),
+                    level=row.level,
+                    event=row.event,
+                    pair=row.pair,
+                    strategy=row.strategy,
+                    timeframe=row.timeframe,
+                    message=row.message,
+                    details=row.details_json or {},
+                )
+                for row in reversed(rows)
+            ]
+            return TradingLogsResponse(items=items)
+    except SQLAlchemyError as exc:
+        logger.warning("trading_logs_db_read_failed_fallback_memory", error=str(exc))
+
+    # Fallback: in-memory buffer (for early startup edge cases)
     items = [TradingLogEvent(**e) for e in list_events(limit=limit)]
     return TradingLogsResponse(items=items)
 

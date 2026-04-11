@@ -49,6 +49,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.okx_client = okx_client
     logger.info("okx_client_initialised", mode=settings.OKX_MODE)
 
+    # 1.5 Runtime event persistence (DB)
+    try:
+        from app.core.runtime_events import configure_persistence
+        from app.db.database import AsyncSessionLocal
+
+        configure_persistence(session_factory=AsyncSessionLocal)
+        logger.info("runtime_event_persistence_initialised")
+    except Exception as exc:
+        logger.warning("runtime_event_persistence_unavailable", error=str(exc))
+
     # 2. Strategy registry + auto-discover
     from app.core.strategy_registry import auto_discover, registry
 
@@ -166,6 +176,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("telegram_command_poller_stopped")
         except Exception as exc:
             logger.error("telegram_command_poller_stop_error", error=str(exc))
+
+    try:
+        from app.core.runtime_events import shutdown_persistence
+
+        await shutdown_persistence()
+    except Exception as exc:
+        logger.error("runtime_event_persistence_stop_error", error=str(exc))
 
     try:
         await okx_client.close()

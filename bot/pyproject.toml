@@ -27,6 +27,10 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-httpx>=0.30.0",
 ]
+ml = [
+    "pandas[pyarrow]>=2.2.0",
+    "chronos-forecasting>=2.0.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "strategies"]

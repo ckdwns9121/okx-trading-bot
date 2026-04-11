@@ -106,7 +106,8 @@ class PairManager:
             position = await repo.get_position(session, pair)
         if position is not None:
             logger.info("pair_remove_closing_position", pair=pair)
-            await self._order_manager.close_position(pair)
+            strategy_name = self._pair_status.get(pair).strategy_name if pair in self._pair_status else None
+            await self._order_manager.close_position(pair, strategy_name=strategy_name)
 
         self._pair_tasks.pop(pair, None)
         if pair in self._pair_status:
@@ -176,7 +177,7 @@ class PairManager:
                 if status.retry_count > len(_RETRY_DELAYS):
                     log.critical("pair_max_retries_exceeded", retries=status.retry_count)
                     try:
-                        await self._order_manager.close_position(pair)
+                        await self._order_manager.close_position(pair, strategy_name=strategy.name)
                     except Exception as close_exc:
                         log.error("pair_emergency_close_failed", error=str(close_exc))
                     status.status = "failed"
@@ -277,6 +278,6 @@ class PairManager:
         )
 
         if signal.signal in (Signal.LONG, Signal.SHORT) and sim_position is None:
-            await self._order_manager.open_position(pair, signal)
+            await self._order_manager.open_position(pair, signal, strategy_name=strategy.name)
         elif signal.signal == Signal.CLOSE and sim_position is not None:
-            await self._order_manager.close_position(pair)
+            await self._order_manager.close_position(pair, strategy_name=strategy.name)

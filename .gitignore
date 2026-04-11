@@ -18,7 +18,10 @@ __pycache__/
 node_modules/
 .next/
 out/
+dist/
 coverage/
+src-tauri/target/
+desktop/src-tauri/target/
 
 # Local runtime/state
 .omx/
