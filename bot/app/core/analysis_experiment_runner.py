@@ -15,12 +15,12 @@ from datetime import datetime
 from typing import Any
 
 from app.core.backtest_engine import BacktestEngine, BacktestResult
-from app.core.optimizer import DEFAULT_PARAM_SPACES, ParameterOptimizer
+from app.core.optimizer import ParameterOptimizer
 from app.core.strategy_base import BaseStrategy
 from app.core.strategy_registry import registry as strategy_registry
 from app.logging_config import get_logger
 from app.models.analysis_skill import AnalysisRequest
-from app.models.analysis_skill import CANONICAL_METRIC_KEYS, normalize_metric_keys
+from app.models.analysis_skill import CANONICAL_METRIC_KEYS
 from app.core import analysis_scoring
 
 logger = get_logger(__name__)
@@ -69,21 +69,6 @@ class AnalysisExperimentRunner:
                 end_date=end_dt,
             )
             await session.commit()
-
-    def _canonicalize_window_map(self, window_metrics: dict[str, Any]) -> MetricsByWindowResult:
-        def _extract(w: str) -> dict[str, float]:
-            metrics = normalize_metric_keys(dict(window_metrics[w]))
-            # ensure canonical keys are exactly present
-            if set(metrics.keys()) != CANONICAL_METRIC_KEYS:
-                missing = CANONICAL_METRIC_KEYS - metrics.keys()
-                raise ValueError(f"window {w!r} missing keys {sorted(missing)}")
-            return {k: float(v) for k, v in metrics.items()}
-
-        return MetricsByWindowResult(
-            train=_extract("train"),
-            val=_extract("val"),
-            holdout=_extract("holdout"),
-        )
 
     @staticmethod
     def _params_hash(params: dict[str, Any]) -> str:
@@ -234,11 +219,10 @@ class AnalysisExperimentRunner:
         for rank, (_, params) in enumerate(ranked_candidates[: request.top_k], start=1):
             params_hash = self._params_hash(params)
             cand_metrics: dict[str, dict[str, float]] = {}
-            window_scores: dict[str, float] = {}
-
             try:
                 for name in ("train", "val", "holdout"):
                     win = windows[name]
+                    attempted += 1
                     bt = await self._run_backtest_once(
                         request.strategy_name,
                         params,
@@ -276,6 +260,7 @@ class AnalysisExperimentRunner:
                 if rank == 1:
                     win = windows["holdout"]
                     first = cand_metrics["holdout"]
+                    attempted += 1
                     replay = await self._run_backtest_once(
                         request.strategy_name,
                         params,
@@ -339,12 +324,28 @@ class AnalysisExperimentRunner:
 
             except Exception:
                 failed += 1
-                if failed / max(1, attempted + failed) > run_limits.partial_failure_threshold:
+                window_name = name if "name" in locals() else "unknown"
+                log.warning(
+                    "analysis_candidate_evaluated",
+                    run_id=run_id,
+                    strategy_name=request.strategy_name,
+                    params_hash=params_hash,
+                    window=window_name,
+                    status="failed",
+                    score=0.0,
+                    recommendation_rank=rank,
+                    degraded_mode=True,
+                    failure_ratio=0.0,
+                    baseline_delta={},
+                    replay_delta={},
+                    error="candidate_backtest_failed",
+                )
+                if failed / max(1, attempted) > run_limits.partial_failure_threshold:
                     break
 
         attempted_count = max(1, attempted)
-        failure_ratio = failed / attempted_count
-        if attempted_count == 0:
+        failure_ratio = failed / max(1, attempted)
+        if attempted == 0:
             failure_ratio = 1.0
 
         if failure_ratio > run_limits.partial_failure_threshold:
