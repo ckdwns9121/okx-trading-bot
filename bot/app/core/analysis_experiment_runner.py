@@ -46,6 +46,7 @@ class RecommendationResult:
 
 @dataclass
 class AnalysisRunResult:
+    run_id: str
     status: str
     failures: dict[str, Any]
     baseline: dict[str, MetricsByWindowResult]
@@ -381,6 +382,7 @@ class AnalysisExperimentRunner:
         )
 
         return AnalysisRunResult(
+            run_id=run_id,
             status=status,
             failures={
                 "failed_combinations": failed,
