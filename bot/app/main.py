@@ -232,6 +232,7 @@ def create_app() -> FastAPI:
     from app.api.routes_compare import router as compare_router
     from app.api.routes_config import router as config_router
     from app.api.routes_markets import router as markets_router
+    from app.api.routes_analysis_skill import router as analysis_skill_router
     from app.api.routes_optimizer import router as optimizer_router
     from app.api.routes_trades import router as trades_router
     from app.api.routes_trading import router as trading_router
@@ -245,6 +246,7 @@ def create_app() -> FastAPI:
     app.include_router(markets_router)
     app.include_router(optimizer_router)
     app.include_router(compare_router)
+    app.include_router(analysis_skill_router)
     app.include_router(selector_router)
     app.include_router(validate_router)
 
