@@ -26,6 +26,16 @@ from app.core import analysis_scoring
 logger = get_logger(__name__)
 
 
+def replay_passes_policy(original: dict[str, float], replay: dict[str, float]) -> bool:
+    """Replay policy used for top-1 candidate reproducibility checks."""
+    return (
+        abs(replay["total_pnl"] - original["total_pnl"]) / max(abs(original["total_pnl"]), 1.0)
+        <= 0.05
+        and abs(replay["sharpe_ratio"] - original["sharpe_ratio"]) <= 0.15
+        and replay["trade_count"] >= 0.9 * original["trade_count"]
+    )
+
+
 @dataclass
 class MetricsByWindowResult:
     train: dict[str, float]
@@ -280,11 +290,7 @@ class AnalysisExperimentRunner:
                         k: replay_metrics[k] - first[k] for k in CANONICAL_METRIC_KEYS
                     }
                     original = first
-                    replay_pass = (
-                        abs(replay_delta["total_pnl"]) <= 0.05 * max(abs(original["total_pnl"]), 1.0)
-                        and abs(replay_delta["sharpe_ratio"]) <= 0.15
-                        and replay_metrics["trade_count"] >= 0.9 * original["trade_count"]
-                    )
+                    replay_pass = replay_passes_policy(first, replay_metrics)
                     log.info(
                         "analysis_replay_completed",
                         run_id=run_id,
