@@ -15,7 +15,22 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@postgres:5432/trading"
 
     MAX_DAILY_LOSS_USD: float = 100.0
+    MAX_MONTHLY_LOSS_USD: float = 500.0
     MAX_POSITION_SIZE_PCT: float = 10.0
+    MAX_TOTAL_EXPOSURE_PCT: float = 100.0
+    MAX_PAIR_EXPOSURE_PCT: float = 100.0
+
+    RISK_VOL_ENABLED: bool = False
+    RISK_VOL_LOOKBACK: int = 60
+    RISK_VOL_TARGET_PCT: float = 1.5
+    RISK_VOL_MIN_SCALE: float = 0.25
+    RISK_VOL_MAX_SCALE: float = 1.0
+
+    ORDER_SPLIT_ENABLED: bool = False
+    ORDER_SPLIT_PARTS: int = 1
+    ORDER_SPLIT_INTERVAL_SEC: float = 0.4
+    ORDER_RETRY_MAX_ATTEMPTS: int = 3
+    ORDER_RETRY_BACKOFF_SEC: float = 0.6
 
     TELEGRAM_NOTIFICATIONS_ENABLED: bool = True
     TELEGRAM_BOT_TOKEN: str | None = None
@@ -29,12 +44,12 @@ class Settings(BaseSettings):
     CHRONOS_TIMEOUT_SEC: float = 12.0
     CHRONOS_PREDICTION_LENGTH: int = 8
     CHRONOS_MIN_CONTEXT: int = 256
-    CHRONOS_ENTRY_EDGE_PCT: float = 0.25
-    CHRONOS_EXIT_EDGE_PCT: float = 0.08
-    CHRONOS_MAX_UNCERTAINTY_PCT: float = 1.2
+    CHRONOS_ENTRY_EDGE_PCT: float = 0.14
+    CHRONOS_EXIT_EDGE_PCT: float = 0.03
+    CHRONOS_MAX_UNCERTAINTY_PCT: float = 1.4
     CHRONOS_BASE_SIZE_PCT: float = 100.0
-    CHRONOS_MIN_SIZE_PCT: float = 25.0
-    CHRONOS_REGIME_CONFIDENCE_MIN: float = 0.55
+    CHRONOS_MIN_SIZE_PCT: float = 35.0
+    CHRONOS_REGIME_CONFIDENCE_MIN: float = 0.78
 
     @property
     def okx_base_url(self) -> str:

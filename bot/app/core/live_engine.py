@@ -170,7 +170,9 @@ class LiveEngine:
         return {
             "circuit_breaker": {
                 "tripped": self.circuit_breaker.is_tripped,
+                "reason": self.circuit_breaker.trip_reason,
                 "max_daily_loss_usd": app_settings.MAX_DAILY_LOSS_USD,
+                "max_monthly_loss_usd": app_settings.MAX_MONTHLY_LOSS_USD,
             },
             "pairs": self.pair_manager.get_status(),
             "mode": app_settings.OKX_MODE,

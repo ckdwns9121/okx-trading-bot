@@ -31,6 +31,8 @@ class _SimPosition:
     sl_price: Optional[float] = None
     trailing_stop_pct: Optional[float] = None
     high_water_mark: Optional[float] = None  # for trailing stop
+    funding_pnl: float = 0.0
+    candles_held: int = 0
 
 
 @dataclass
@@ -46,6 +48,8 @@ class _ClosedTrade:
     entry_time: datetime
     exit_time: datetime
     exit_reason: str = ""  # "signal", "tp", "sl", "trailing_stop", "stop_loss_pct", "end_of_data"
+    funding_pnl: float = 0.0
+    liquidation_fee: float = 0.0
 
 
 @dataclass
@@ -126,6 +130,8 @@ def _close_position(
     fee_rate: float,
     exit_time: datetime,
     exit_reason: str,
+    funding_pnl: float = 0.0,
+    liquidation_fee: float = 0.0,
 ) -> tuple[_ClosedTrade, float]:
     """Close a position and return (closed_trade, net_pnl)."""
     if position.direction == "buy":
@@ -137,7 +143,7 @@ def _close_position(
 
     gross_pnl = position.quantity * price_return * position.leverage
     exit_fee = position.quantity * fee_rate
-    net_pnl = gross_pnl - exit_fee
+    net_pnl = gross_pnl - exit_fee + funding_pnl - liquidation_fee
     pnl_pct = (net_pnl / position.quantity) * 100.0 if position.quantity else 0.0
 
     trade = _ClosedTrade(
@@ -148,17 +154,55 @@ def _close_position(
         leverage=position.leverage,
         pnl=net_pnl,
         pnl_pct=pnl_pct,
-        fee=position.entry_fee + exit_fee,
+        fee=position.entry_fee + exit_fee + liquidation_fee,
         entry_time=position.entry_time,
         exit_time=exit_time,
         exit_reason=exit_reason,
+        funding_pnl=funding_pnl,
+        liquidation_fee=liquidation_fee,
     )
     return trade, net_pnl
+
+
+def _timeframe_to_minutes(timeframe: str) -> int:
+    tf = str(timeframe or "1m").strip()
+    try:
+        if tf.endswith("m"):
+            return max(1, int(tf[:-1]))
+        if tf.endswith("H") or tf.endswith("h"):
+            return max(1, int(tf[:-1])) * 60
+        if tf.endswith("D") or tf.endswith("d"):
+            return max(1, int(tf[:-1])) * 60 * 24
+        if tf.endswith("W") or tf.endswith("w"):
+            return max(1, int(tf[:-1])) * 60 * 24 * 7
+    except Exception:
+        pass
+    return 1
+
+
+def _effective_slippage_pct(
+    *,
+    base_slippage_pct: float,
+    notional: float,
+    price: float,
+    volume: float,
+    liquidity_impact_factor: float,
+) -> float:
+    """Return slippage percent with simple liquidity impact model."""
+    base = max(0.0, float(base_slippage_pct))
+    if liquidity_impact_factor <= 0 or price <= 0 or volume <= 0 or notional <= 0:
+        return base
+    est_quote_liquidity = price * volume
+    if est_quote_liquidity <= 0:
+        return base
+    impact_pct = max(0.0, float(liquidity_impact_factor)) * (notional / est_quote_liquidity) * 100.0
+    return base + impact_pct
 
 
 def _simulate_sync(
     candles: list,
     strategy_lookback: int,
+    timeframe: str,
     initial_balance: float,
     leverage: int,
     fee_rate: float,
@@ -166,6 +210,10 @@ def _simulate_sync(
     signals: list[TradeSignal],
     stop_loss_pct: float = 0.03,
     cooldown_candles: int = 0,
+    funding_rate_per_8h: float = 0.0,
+    liquidity_impact_factor: float = 0.0,
+    maintenance_margin_ratio: float = 0.005,
+    liquidation_fee_pct: float = 0.002,
 ) -> tuple[list[_ClosedTrade], list[float], float]:
     """Pure CPU computation — run inside asyncio.to_thread to avoid blocking.
 
@@ -179,6 +227,8 @@ def _simulate_sync(
     closed_trades: list[_ClosedTrade] = []
     position: Optional[_SimPosition] = None
     cooldown_remaining: int = 0
+    timeframe_minutes = _timeframe_to_minutes(timeframe)
+    funding_interval_candles = max(1, int((8 * 60) / max(1, timeframe_minutes)))
 
     for i, candle in enumerate(candles):
         if i >= len(signals):
@@ -199,8 +249,21 @@ def _simulate_sync(
             current_dir = position.direction
             new_dir = "buy" if sig.signal == Signal.LONG else "sell"
             if current_dir != new_dir:
+                effective_slip = _effective_slippage_pct(
+                    base_slippage_pct=slippage_pct,
+                    notional=position.quantity,
+                    price=float(candle.close),
+                    volume=float(getattr(candle, "volume", 0.0) or 0.0),
+                    liquidity_impact_factor=liquidity_impact_factor,
+                )
                 trade, net_pnl = _close_position(
-                    position, raw_price, slippage_pct, fee_rate, candle.timestamp, "signal_flip",
+                    position,
+                    raw_price,
+                    effective_slip,
+                    fee_rate,
+                    candle.timestamp,
+                    "signal_flip",
+                    funding_pnl=position.funding_pnl,
                 )
                 balance += net_pnl
                 balance_series.append(balance)
@@ -212,7 +275,14 @@ def _simulate_sync(
             if cooldown_remaining > 0:
                 pass  # skip entry during cooldown
             else:
-                slippage_mult = (1 + slippage_pct / 100) if sig.signal == Signal.LONG else (1 - slippage_pct / 100)
+                effective_slip = _effective_slippage_pct(
+                    base_slippage_pct=slippage_pct,
+                    notional=balance * (sig.size_pct / 100.0),
+                    price=raw_price,
+                    volume=float(getattr(candle, "volume", 0.0) or 0.0),
+                    liquidity_impact_factor=liquidity_impact_factor,
+                )
+                slippage_mult = (1 + effective_slip / 100) if sig.signal == Signal.LONG else (1 - effective_slip / 100)
                 entry_price = raw_price * slippage_mult
                 notional = balance * (sig.size_pct / 100.0)
                 entry_fee = notional * fee_rate
@@ -229,11 +299,26 @@ def _simulate_sync(
                     sl_price=sig.sl_price,
                     trailing_stop_pct=sig.trailing_stop_pct,
                     high_water_mark=entry_price,
+                    funding_pnl=0.0,
+                    candles_held=0,
                 )
 
         elif sig.signal == Signal.CLOSE and position is not None:
+            effective_slip = _effective_slippage_pct(
+                base_slippage_pct=slippage_pct,
+                notional=position.quantity,
+                price=float(candle.close),
+                volume=float(getattr(candle, "volume", 0.0) or 0.0),
+                liquidity_impact_factor=liquidity_impact_factor,
+            )
             trade, net_pnl = _close_position(
-                position, raw_price, slippage_pct, fee_rate, candle.timestamp, "signal",
+                position,
+                raw_price,
+                effective_slip,
+                fee_rate,
+                candle.timestamp,
+                "signal",
+                funding_pnl=position.funding_pnl,
             )
             balance += net_pnl
             balance_series.append(balance)
@@ -244,9 +329,33 @@ def _simulate_sync(
         if position is not None:
             exit_reason = ""
             exit_price_override: Optional[float] = None
+            liquidation_fee = 0.0
+            position.candles_held += 1
+
+            # Periodic funding (8h) approximation.
+            if funding_rate_per_8h != 0 and position.candles_held % funding_interval_candles == 0:
+                # Positive funding: longs pay, shorts receive.
+                direction_sign = -1.0 if position.direction == "buy" else 1.0
+                funding_delta = position.quantity * funding_rate_per_8h * direction_sign
+                position.funding_pnl += funding_delta
+
+            # Liquidation check (simplified).
+            liq_move = max(0.001, (1.0 / max(position.leverage, 1)) - maintenance_margin_ratio)
+            if position.direction == "buy":
+                liq_price = position.entry_price * (1.0 - liq_move)
+                if candle.low <= liq_price:
+                    exit_reason = "liquidated"
+                    exit_price_override = liq_price
+                    liquidation_fee = position.quantity * max(0.0, liquidation_fee_pct)
+            else:
+                liq_price = position.entry_price * (1.0 + liq_move)
+                if candle.high >= liq_price:
+                    exit_reason = "liquidated"
+                    exit_price_override = liq_price
+                    liquidation_fee = position.quantity * max(0.0, liquidation_fee_pct)
 
             # Update trailing stop high-water mark
-            if position.trailing_stop_pct is not None:
+            if not exit_reason and position.trailing_stop_pct is not None:
                 if position.direction == "buy":
                     if candle.high > (position.high_water_mark or 0):
                         position.high_water_mark = candle.high
@@ -300,9 +409,22 @@ def _simulate_sync(
 
             # Execute exit if triggered
             if exit_reason and exit_price_override is not None:
+                effective_slip = _effective_slippage_pct(
+                    base_slippage_pct=slippage_pct,
+                    notional=position.quantity,
+                    price=float(candle.close),
+                    volume=float(getattr(candle, "volume", 0.0) or 0.0),
+                    liquidity_impact_factor=liquidity_impact_factor,
+                )
                 trade, net_pnl = _close_position(
-                    position, exit_price_override, 0.0, fee_rate,
-                    candle.timestamp, exit_reason,
+                    position,
+                    exit_price_override,
+                    effective_slip,
+                    fee_rate,
+                    candle.timestamp,
+                    exit_reason,
+                    funding_pnl=position.funding_pnl,
+                    liquidation_fee=liquidation_fee,
                 )
                 balance += net_pnl
                 balance_series.append(balance)
@@ -315,8 +437,21 @@ def _simulate_sync(
     # Force-close any open position at the last candle's close
     if position is not None:
         last = candles[-1]
+        effective_slip = _effective_slippage_pct(
+            base_slippage_pct=slippage_pct,
+            notional=position.quantity,
+            price=float(last.close),
+            volume=float(getattr(last, "volume", 0.0) or 0.0),
+            liquidity_impact_factor=liquidity_impact_factor,
+        )
         trade, net_pnl = _close_position(
-            position, last.close, 0.0, fee_rate, last.timestamp, "end_of_data",
+            position,
+            last.close,
+            effective_slip,
+            fee_rate,
+            last.timestamp,
+            "end_of_data",
+            funding_pnl=position.funding_pnl,
         )
         balance += net_pnl
         balance_series.append(balance)
@@ -344,6 +479,10 @@ class BacktestEngine:
         slippage_pct: float = 0.05,
         stop_loss_pct: float = 0.03,
         cooldown_candles: int = 0,
+        funding_rate_per_8h: float = 0.0,
+        liquidity_impact_factor: float = 0.0,
+        maintenance_margin_ratio: float = 0.005,
+        liquidation_fee_pct: float = 0.002,
         persist: bool = True,
     ) -> BacktestResult:
         """Execute a backtest and return a :class:`BacktestResult`.
@@ -445,6 +584,7 @@ class BacktestEngine:
             _simulate_sync,
             candles,
             lookback,
+            timeframe,
             initial_balance,
             leverage,
             fee_rate,
@@ -452,6 +592,10 @@ class BacktestEngine:
             signals,
             stop_loss_pct,
             cooldown_candles,
+            funding_rate_per_8h,
+            liquidity_impact_factor,
+            maintenance_margin_ratio,
+            liquidation_fee_pct,
         )
 
         total_pnl, win_rate, max_drawdown, sharpe_ratio = _compute_metrics(

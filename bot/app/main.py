@@ -105,9 +105,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         circuit_breaker = CircuitBreaker(
             session_factory=AsyncSessionLocal,
             max_daily_loss=settings.MAX_DAILY_LOSS_USD,
+            max_monthly_loss=settings.MAX_MONTHLY_LOSS_USD,
         )
         app.state.circuit_breaker = circuit_breaker
-        logger.info("circuit_breaker_initialised", max_daily_loss=settings.MAX_DAILY_LOSS_USD)
+        logger.info(
+            "circuit_breaker_initialised",
+            max_daily_loss=settings.MAX_DAILY_LOSS_USD,
+            max_monthly_loss=settings.MAX_MONTHLY_LOSS_USD,
+        )
     except ImportError:
         logger.warning("circuit_breaker_unavailable")
         app.state.circuit_breaker = None

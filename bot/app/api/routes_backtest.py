@@ -42,6 +42,26 @@ class BacktestRequest(BaseModel):
     fee_rate: float = Field(default=0.0005, ge=0, description="Taker fee rate, e.g. 0.0005")
     slippage_pct: float = Field(default=0.0, ge=0, description="Slippage as decimal, e.g. 0.001")
     cooldown_candles: int = Field(default=0, ge=0, description="Number of candles to skip re-entry after stop-loss")
+    funding_rate_per_8h: float = Field(
+        default=0.0,
+        description="Perpetual funding rate applied every 8h in simulation (positive: longs pay / shorts receive).",
+    )
+    liquidity_impact_factor: float = Field(
+        default=0.0,
+        ge=0,
+        description="Liquidity impact coefficient for dynamic slippage model.",
+    )
+    maintenance_margin_ratio: float = Field(
+        default=0.005,
+        ge=0,
+        le=1,
+        description="Maintenance margin ratio used for simplified liquidation simulation.",
+    )
+    liquidation_fee_pct: float = Field(
+        default=0.002,
+        ge=0,
+        description="Additional fee applied on liquidation exits (as fraction of notional).",
+    )
     parameters_json: Optional[dict[str, Any]] = Field(
         default=None,
         description="Optional strategy parameters passed to strategy.configure(...)",
@@ -209,6 +229,10 @@ async def submit_backtest(
             fee_rate=body.fee_rate,
             slippage_pct=body.slippage_pct,
             cooldown_candles=body.cooldown_candles,
+            funding_rate_per_8h=body.funding_rate_per_8h,
+            liquidity_impact_factor=body.liquidity_impact_factor,
+            maintenance_margin_ratio=body.maintenance_margin_ratio,
+            liquidation_fee_pct=body.liquidation_fee_pct,
         )
 
         log.info("backtest_complete", pnl=bt_result.total_pnl, trades=bt_result.trade_count)

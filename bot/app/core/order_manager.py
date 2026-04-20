@@ -1,6 +1,7 @@
 """Order placement with full lifecycle tracking in the database."""
 
 import asyncio
+import statistics
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -73,6 +74,123 @@ class OrderManager:
                 return float(item.get("availBal", 0.0))
         return 0.0
 
+    def _estimate_position_notional(self, position) -> float:
+        """Estimate position notional in USDT from local position row."""
+        ct_val = self._get_contract_value(position.pair)
+        return max(0.0, float(position.quantity) * float(position.entry_price) * ct_val)
+
+    async def _get_open_exposure_notional(
+        self,
+        session,
+        pair: str,
+    ) -> tuple[float, float]:
+        """Return (total_open_notional, pair_open_notional)."""
+        positions = await repo.get_positions(session)
+        total = 0.0
+        pair_total = 0.0
+        for pos in positions:
+            n = self._estimate_position_notional(pos)
+            total += n
+            if pos.pair == pair:
+                pair_total += n
+        return total, pair_total
+
+    async def _estimate_volatility_scale(self, pair: str) -> float:
+        """Estimate size scaling factor based on short-horizon realized volatility."""
+        if not self._settings.RISK_VOL_ENABLED:
+            return 1.0
+
+        lookback = max(20, int(self._settings.RISK_VOL_LOOKBACK))
+        try:
+            candles = await self._client.get_candles(pair, "1m", limit=lookback + 1)
+        except Exception as exc:
+            logger.warning("risk_volatility_fetch_failed", pair=pair, error=str(exc))
+            return 1.0
+
+        if len(candles) < 3:
+            return 1.0
+
+        # Ensure chronological order.
+        ordered = sorted(candles, key=lambda c: int(str(c.get("timestamp", "0"))))
+        closes = [float(c.get("close", 0.0)) for c in ordered if float(c.get("close", 0.0)) > 0]
+        if len(closes) < 3:
+            return 1.0
+
+        returns_pct: list[float] = []
+        for prev, cur in zip(closes[:-1], closes[1:]):
+            if prev <= 0:
+                continue
+            returns_pct.append(((cur - prev) / prev) * 100.0)
+        if len(returns_pct) < 2:
+            return 1.0
+
+        realized_vol_pct = statistics.pstdev(returns_pct)
+        target_vol_pct = max(0.01, float(self._settings.RISK_VOL_TARGET_PCT))
+        raw_scale = target_vol_pct / realized_vol_pct if realized_vol_pct > 0 else 1.0
+        scale = max(
+            float(self._settings.RISK_VOL_MIN_SCALE),
+            min(float(self._settings.RISK_VOL_MAX_SCALE), raw_scale),
+        )
+        return scale
+
+    @staticmethod
+    def _split_contracts(total_contracts: int, parts: int) -> list[int]:
+        """Split contract count into near-even integer slices."""
+        total = max(1, int(total_contracts))
+        p = max(1, min(int(parts), total))
+        base = total // p
+        rem = total % p
+        slices = [base + (1 if i < rem else 0) for i in range(p)]
+        return [s for s in slices if s > 0]
+
+    async def _place_order_with_retry(
+        self,
+        *,
+        pair: str,
+        side: str,
+        size: str,
+        leverage: int,
+        cl_ord_id: str,
+        pos_side: str,
+        order_type: str = "market",
+    ) -> dict:
+        """Place order with retry + idempotency check via clOrdId lookup."""
+        attempts = max(1, int(self._settings.ORDER_RETRY_MAX_ATTEMPTS))
+        backoff = max(0.05, float(self._settings.ORDER_RETRY_BACKOFF_SEC))
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._client.place_order(
+                    pair=pair,
+                    side=side,
+                    size=size,
+                    leverage=leverage,
+                    order_type=order_type,
+                    cl_ord_id=cl_ord_id,
+                    pos_side=pos_side,
+                )
+            except Exception as exc:
+                last_exc = exc
+                # If request may have succeeded server-side, recover idempotently.
+                try:
+                    detail = await self._client.get_order_by_cl_ord_id(cl_ord_id, pair=pair)
+                    if detail.get("ordId"):
+                        logger.warning(
+                            "order_retry_recovered_by_clord",
+                            pair=pair,
+                            cl_ord_id=cl_ord_id,
+                            attempt=attempt,
+                        )
+                        return {"data": [{"ordId": detail.get("ordId"), "sCode": "0", "sMsg": "existing_order"}]}
+                except Exception:
+                    pass
+
+                if attempt < attempts:
+                    await asyncio.sleep(backoff * attempt)
+
+        raise RuntimeError(f"order placement failed after retries: {last_exc}")
+
     @staticmethod
     def _signal_to_side(signal: Signal) -> str:
         return "buy" if signal == Signal.LONG else "sell"
@@ -138,130 +256,217 @@ class OrderManager:
             return None
 
         log = logger.bind(pair=pair, signal=signal.signal.value, strategy=strategy_name or "unknown")
-        created_order_id: Optional[uuid.UUID] = None
 
         try:
             balance = await self._get_usdt_balance()
-            notional = (
-                balance
-                * (self._settings.MAX_POSITION_SIZE_PCT / 100.0)
-                * (signal.size_pct / 100.0)
-            )
             side = self._signal_to_side(signal.signal)
             leverage = signal.leverage
 
-            # OKX SWAP: sz is number of contracts (integer).
-            # Fetch current price to convert USDT notional → contracts.
-            # BTC-USDT-SWAP: 1 contract = 0.01 BTC; ETH-USDT-SWAP: 1 contract = 0.1 ETH
-            # Use ctVal from instrument info, or estimate: contracts = notional / (price * ctVal)
-            # Simplified: use notional / price to get base amount, then / ctVal for contracts
             price = await self._get_last_price(pair)
             if price <= 0:
                 log.error("open_position_no_price", pair=pair)
                 return None
 
-            # Contract value mapping (common USDT-SWAP pairs)
-            ct_val = self._get_contract_value(pair)
-            contracts = int(notional / (price * ct_val))
-            if contracts < 1:
-                contracts = 1
-            size_str = str(contracts)
-
-            # pos_side for hedge mode: "long" when buying to open long, "short" when selling to open short
-            pos_side = "long" if signal.signal == Signal.LONG else "short"
-
-            log.info("open_position_sizing", balance=balance, notional=notional, leverage=leverage, contracts=contracts, price=price)
-            add_event(
-                event="order_open_attempt",
-                pair=pair,
-                details={
-                    "side": side,
-                    "contracts": contracts,
-                    "leverage": leverage,
-                },
+            vol_scale = await self._estimate_volatility_scale(pair)
+            requested_notional = (
+                balance
+                * (self._settings.MAX_POSITION_SIZE_PCT / 100.0)
+                * (signal.size_pct / 100.0)
+                * vol_scale
             )
 
+            ct_val = self._get_contract_value(pair)
+            pos_side = "long" if signal.signal == Signal.LONG else "short"
+
             await self._client.set_leverage(pair, leverage)
-
-            cl_ord_id = uuid.uuid4().hex
-
             async with self._session_factory() as session:
-                order = await repo.create_order(session, {
-                    "pair": pair, "side": side, "order_type": "market",
-                    "quantity": float(contracts), "leverage": leverage,
-                    "status": "pending", "cl_ord_id": cl_ord_id,
-                })
-                created_order_id = order.id
-                await session.commit()
+                open_total_notional, open_pair_notional = await self._get_open_exposure_notional(session, pair)
+                total_cap_notional = balance * (self._settings.MAX_TOTAL_EXPOSURE_PCT / 100.0)
+                pair_cap_notional = balance * (self._settings.MAX_PAIR_EXPOSURE_PCT / 100.0)
+                total_room = max(0.0, total_cap_notional - open_total_notional)
+                pair_room = max(0.0, pair_cap_notional - open_pair_notional)
 
-                result = await self._client.place_order(
-                    pair=pair, side=side, size=size_str,
-                    leverage=leverage, order_type="market", cl_ord_id=cl_ord_id,
-                    pos_side=pos_side,
+                notional = min(requested_notional, total_room, pair_room)
+                if notional <= 0:
+                    log.warning(
+                        "open_position_blocked_exposure_limit",
+                        requested_notional=requested_notional,
+                        total_room=total_room,
+                        pair_room=pair_room,
+                        open_total_notional=open_total_notional,
+                        open_pair_notional=open_pair_notional,
+                    )
+                    add_event(
+                        event="order_open_blocked",
+                        level="warning",
+                        pair=pair,
+                        strategy=strategy_name,
+                        message="Blocked by exposure limits",
+                        details={
+                            "requested_notional": requested_notional,
+                            "total_room": total_room,
+                            "pair_room": pair_room,
+                            "open_total_notional": open_total_notional,
+                            "open_pair_notional": open_pair_notional,
+                        },
+                    )
+                    return None
+
+                contracts_total = int(notional / (price * ct_val))
+                if contracts_total < 1:
+                    log.warning(
+                        "open_position_notional_below_single_contract",
+                        notional=notional,
+                        price=price,
+                        ct_val=ct_val,
+                    )
+                    return None
+
+                split_parts = (
+                    max(1, int(self._settings.ORDER_SPLIT_PARTS))
+                    if self._settings.ORDER_SPLIT_ENABLED
+                    else 1
+                )
+                slices = self._split_contracts(contracts_total, split_parts)
+                log.info(
+                    "open_position_sizing",
+                    balance=balance,
+                    requested_notional=requested_notional,
+                    effective_notional=notional,
+                    volatility_scale=vol_scale,
+                    leverage=leverage,
+                    contracts_total=contracts_total,
+                    split_parts=len(slices),
+                    price=price,
+                )
+                add_event(
+                    event="order_open_attempt",
+                    pair=pair,
+                    strategy=strategy_name,
+                    details={
+                        "side": side,
+                        "leverage": leverage,
+                        "contracts_total": contracts_total,
+                        "split_parts": len(slices),
+                        "requested_notional": requested_notional,
+                        "effective_notional": notional,
+                        "volatility_scale": vol_scale,
+                    },
                 )
 
-                order_data: list[dict] = result.get("data", [{}])
-                exchange_order_id: Optional[str] = None
+                executed_contracts = 0.0
+                executed_notional = 0.0
+                exchange_order_ids: list[str] = []
 
-                if order_data:
-                    item = order_data[0]
-                    exchange_order_id = item.get("ordId")
-                    s_code = item.get("sCode", "0")
-                    if s_code != "0":
-                        err_msg = item.get("sMsg", "unknown rejection")
-                        log.error("open_position_order_rejected", s_code=s_code, err_msg=err_msg)
-                        add_event(
-                            event="order_open_rejected",
-                            level="error",
-                            pair=pair,
-                            message=err_msg,
-                            details={"s_code": s_code},
-                        )
-                        mode_label = "DEMO" if self._settings.is_demo else "LIVE"
-                        await self._send_telegram(
-                            "\n".join(
-                                [
-                                    f"[OKX BOT][{mode_label}] OPEN REJECTED",
-                                    f"pair: {pair}",
-                                    f"side: {side}",
-                                    f"code: {s_code}",
-                                    f"error: {err_msg}",
-                                ]
+                for idx, contracts_slice in enumerate(slices, start=1):
+                    cl_ord_id = uuid.uuid4().hex
+                    order = await repo.create_order(
+                        session,
+                        {
+                            "pair": pair,
+                            "side": side,
+                            "order_type": "market",
+                            "quantity": float(contracts_slice),
+                            "leverage": leverage,
+                            "status": "pending",
+                            "cl_ord_id": cl_ord_id,
+                        },
+                    )
+                    await session.commit()
+
+                    result = await self._place_order_with_retry(
+                        pair=pair,
+                        side=side,
+                        size=str(contracts_slice),
+                        leverage=leverage,
+                        order_type="market",
+                        cl_ord_id=cl_ord_id,
+                        pos_side=pos_side,
+                    )
+
+                    order_data: list[dict] = result.get("data", [{}])
+                    exchange_order_id: Optional[str] = None
+                    if order_data:
+                        item = order_data[0]
+                        exchange_order_id = item.get("ordId")
+                        s_code = item.get("sCode", "0")
+                        if s_code != "0":
+                            err_msg = item.get("sMsg", "unknown rejection")
+                            await repo.update_order(
+                                session,
+                                order.id,
+                                {"status": "rejected", "error_message": err_msg},
                             )
-                        )
-                        await repo.update_order(session, order.id, {"status": "rejected", "error_message": err_msg})
-                        await session.commit()
-                        return None
+                            await session.commit()
+                            log.error(
+                                "open_position_order_rejected",
+                                slice_index=idx,
+                                s_code=s_code,
+                                err_msg=err_msg,
+                            )
+                            continue
 
-                await repo.update_order(session, order.id, {"status": "filled", "exchange_order_id": exchange_order_id})
+                    await repo.update_order(
+                        session,
+                        order.id,
+                        {"status": "filled", "exchange_order_id": exchange_order_id},
+                    )
+                    await session.commit()
 
-                fill_price, fill_contracts = await self._fetch_order_fill(cl_ord_id, pair)
-                entry_price = fill_price if fill_price > 0 else price
-                qty_contracts = fill_contracts if fill_contracts > 0 else float(contracts)
-                executed_notional = entry_price * qty_contracts * ct_val
+                    fill_price, fill_contracts = await self._fetch_order_fill(cl_ord_id, pair)
+                    filled_qty = fill_contracts if fill_contracts > 0 else float(contracts_slice)
+                    filled_price = fill_price if fill_price > 0 else price
+                    executed_contracts += filled_qty
+                    executed_notional += filled_price * filled_qty * ct_val
+                    if exchange_order_id:
+                        exchange_order_ids.append(str(exchange_order_id))
 
-                await repo.create_position(session, {
-                    "pair": pair, "direction": side, "entry_price": entry_price,
-                    "quantity": qty_contracts, "leverage": leverage,
-                    "unrealized_pnl": 0.0, "exchange_position_id": exchange_order_id,
-                })
+                if executed_contracts <= 0:
+                    log.error("open_position_all_slices_failed")
+                    return None
+
+                entry_price = executed_notional / (executed_contracts * ct_val)
+                exchange_position_id = ",".join(exchange_order_ids) if exchange_order_ids else None
+                await repo.create_position(
+                    session,
+                    {
+                        "pair": pair,
+                        "direction": side,
+                        "entry_price": entry_price,
+                        "quantity": executed_contracts,
+                        "leverage": leverage,
+                        "unrealized_pnl": 0.0,
+                        "exchange_position_id": exchange_position_id,
+                    },
+                )
                 await session.commit()
 
+            result = {
+                "data": [{"ordId": exchange_order_ids[-1]}] if exchange_order_ids else [],
+                "meta": {
+                    "contracts": executed_contracts,
+                    "notional": executed_notional,
+                    "split_parts": len(slices),
+                },
+            }
             log.info(
                 "open_position_success",
-                exchange_order_id=exchange_order_id,
+                exchange_order_ids=exchange_order_ids,
                 notional=executed_notional,
                 entry_price=entry_price,
-                contracts=qty_contracts,
+                contracts=executed_contracts,
+                split_parts=len(slices),
             )
             add_event(
                 event="order_open_success",
                 pair=pair,
                 details={
-                    "exchange_order_id": exchange_order_id,
+                    "exchange_order_ids": exchange_order_ids,
                     "notional": executed_notional,
                     "entry_price": entry_price,
-                    "contracts": qty_contracts,
+                    "contracts": executed_contracts,
+                    "split_parts": len(slices),
+                    "volatility_scale": vol_scale,
                 },
             )
             mode_label = "DEMO" if self._settings.is_demo else "LIVE"
@@ -271,11 +476,12 @@ class OrderManager:
                         f"[OKX BOT][{mode_label}] OPEN",
                         f"pair: {pair}",
                         f"side: {side}",
-                        f"contracts: {qty_contracts}",
+                        f"contracts: {executed_contracts}",
                         f"leverage: {leverage}x",
                         f"entry_price: {entry_price:.4f}",
                         f"notional: {executed_notional:.2f} USDT",
-                        f"order_id: {exchange_order_id or '-'}",
+                        f"slices: {len(slices)}",
+                        f"order_ids: {','.join(exchange_order_ids) if exchange_order_ids else '-'}",
                         f"reason: {signal.reason}",
                     ]
                 )
@@ -296,17 +502,6 @@ class OrderManager:
                     ]
                 )
             )
-            if created_order_id is not None:
-                try:
-                    async with self._session_factory() as session:
-                        await repo.update_order(
-                            session,
-                            created_order_id,
-                            {"status": "rejected", "error_message": str(exc)[:500]},
-                        )
-                        await session.commit()
-                except Exception as update_exc:
-                    log.error("open_position_reject_mark_failed", error=str(update_exc))
             return None
 
     async def close_position(
@@ -343,7 +538,7 @@ class OrderManager:
                 created_order_id = order.id
                 await session.commit()
 
-                result = await self._client.place_order(
+                result = await self._place_order_with_retry(
                     pair=pair,
                     side=close_side,
                     size=str(close_contracts),
