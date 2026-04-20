@@ -57,6 +57,17 @@ docker compose up -d --build
 - OpenAPI: http://127.0.0.1:8000/docs
 
 ### 2-3. 자주 쓰는 API
+### 2-4. Analysis Skill (v1)
+
+```bash
+# 분석 Skill(v1) 실행
+curl -X POST http://127.0.0.1:8000/api/analysis/skill/run \
+  -H 'Content-Type: application/json' \
+  -d '{"strategy_name":"example_rsi","baseline_strategy_name":"example_rsi","pair":"ETH-USDT-SWAP","timeframe":"1H","windows":[{"name":"train","start":"2026-03-01T00:00:00","end":"2026-03-05T00:00:00"},{"name":"val","start":"2026-03-05T00:00:00","end":"2026-03-08T00:00:00"},{"name":"holdout","start":"2026-03-08T00:00:00","end":"2026-03-10T00:00:00"}],"assumptions":{"initial_balance":10000,"leverage":3,"fee_rate":0.0005,"slippage_pct":0.05,"funding_rate_per_8h":0.0001,"cooldown_candles":1,"liquidity_impact_factor":0.1,"maintenance_margin_ratio":0.005,"liquidation_fee_pct":0.002},"search_space":{"rsi_period":[7,21],"oversold":[20,40],"overbought":[60,80]},"top_k":3,"run_limits":{"max_combinations":100,"timeout_sec":900,"retry_per_failed_job":1,"partial_failure_threshold":0.2}}'
+```
+
+자세한 계약/정책/Replay 규칙은 `docs/trading-analysis-skill-v1.md`를 참고하세요.
+
 
 ```bash
 # 엔진 시작/정지
