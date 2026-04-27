@@ -1,5 +1,6 @@
 import numpy as np
 
+from app.core.indicators import compute_atr
 from app.core.strategy_base import BaseStrategy, Signal, TradeSignal, TradingContext
 from app.logging_config import get_logger
 
@@ -39,6 +40,14 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
         self._ema_fast_period: int = 21
         self._ema_slow_period: int = 55
 
+        # Optional risk overlay. Defaults intentionally preserve the original
+        # all-in signal behavior for existing backtests.
+        self._size_pct: float = 100.0
+        self._atr_period: int = 14
+        self._tp_atr_mult: float | None = None
+        self._sl_atr_mult: float | None = None
+        self._trailing_stop_pct: float | None = None
+
     @property
     def lookback_period(self) -> int:
         # ADX typically needs ~2 * period bars for stable value.
@@ -47,6 +56,7 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
             self._bb_period,
             self._ema_slow_period,
             self._adx_period * 2 + 1,
+            self._atr_period + 1,
         )
 
     def configure(self, params: dict) -> None:
@@ -86,8 +96,35 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
                 raise ValueError("ema_slow_period must be a positive integer")
             self._ema_slow_period = period
 
+        risk_profile = params.get("risk_profile")
+        if risk_profile not in (None, "default", "limited"):
+            raise ValueError("risk_profile must be one of: default, limited")
+        if risk_profile == "default":
+            self._apply_default_risk_profile()
+        elif risk_profile == "limited":
+            self._apply_limited_risk_profile()
+
+        if "size_pct" in params:
+            self._size_pct = float(params["size_pct"])
+        if "atr_period" in params:
+            period = int(params["atr_period"])
+            if period <= 0:
+                raise ValueError("atr_period must be a positive integer")
+            self._atr_period = period
+        if "tp_atr_mult" in params:
+            self._tp_atr_mult = self._optional_positive_float(params["tp_atr_mult"], "tp_atr_mult")
+        if "sl_atr_mult" in params:
+            self._sl_atr_mult = self._optional_positive_float(params["sl_atr_mult"], "sl_atr_mult")
+        if "trailing_stop_pct" in params:
+            self._trailing_stop_pct = self._optional_positive_float(
+                params["trailing_stop_pct"],
+                "trailing_stop_pct",
+            )
+
         if self._ema_fast_period >= self._ema_slow_period:
             raise ValueError("ema_fast_period must be strictly less than ema_slow_period")
+        if not 0.0 < self._size_pct <= 100.0:
+            raise ValueError("size_pct must be in the range (0, 100]")
 
         logger.info(
             "rsi_bollinger_regime_configured",
@@ -100,7 +137,33 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
             adx_threshold=self._adx_threshold,
             ema_fast_period=self._ema_fast_period,
             ema_slow_period=self._ema_slow_period,
+            size_pct=self._size_pct,
+            atr_period=self._atr_period,
+            tp_atr_mult=self._tp_atr_mult,
+            sl_atr_mult=self._sl_atr_mult,
+            trailing_stop_pct=self._trailing_stop_pct,
         )
+
+    @staticmethod
+    def _optional_positive_float(value: object, name: str) -> float | None:
+        if value is None:
+            return None
+        parsed = float(value)
+        if parsed <= 0.0:
+            raise ValueError(f"{name} must be positive when provided")
+        return parsed
+
+    def _apply_default_risk_profile(self) -> None:
+        self._size_pct = 100.0
+        self._tp_atr_mult = None
+        self._sl_atr_mult = None
+        self._trailing_stop_pct = None
+
+    def _apply_limited_risk_profile(self) -> None:
+        self._size_pct = 25.0
+        self._tp_atr_mult = 2.0
+        self._sl_atr_mult = 1.0
+        self._trailing_stop_pct = 0.025
 
     # ------------------------------------------------------------------ #
     # Indicator calculations                                               #
@@ -201,6 +264,33 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
             return "downtrend", adx, ema_fast, ema_slow
         return "ranging", adx, ema_fast, ema_slow
 
+    def _risk_prices(
+        self,
+        signal: Signal,
+        entry_price: float,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+    ) -> tuple[float | None, float | None]:
+        atr = compute_atr(highs, lows, closes, self._atr_period)
+        if atr <= 0.0:
+            return None, None
+
+        tp_price = None
+        sl_price = None
+        if signal == Signal.LONG:
+            if self._tp_atr_mult is not None:
+                tp_price = entry_price + atr * self._tp_atr_mult
+            if self._sl_atr_mult is not None:
+                sl_price = entry_price - atr * self._sl_atr_mult
+        elif signal == Signal.SHORT:
+            if self._tp_atr_mult is not None:
+                tp_price = entry_price - atr * self._tp_atr_mult
+            if self._sl_atr_mult is not None:
+                sl_price = entry_price + atr * self._sl_atr_mult
+
+        return tp_price, sl_price
+
     # ------------------------------------------------------------------ #
     # Signal generation                                                    #
     # ------------------------------------------------------------------ #
@@ -289,24 +379,34 @@ class RSIBollingerRegimeStrategy(BaseStrategy):
             )
 
         if long_condition and not is_long:
+            tp_price, sl_price = self._risk_prices(Signal.LONG, price, highs, lows, closes)
             return TradeSignal(
                 signal=Signal.LONG,
                 pair=context.pair,
                 leverage=context.leverage,
+                size_pct=self._size_pct,
                 reason=(
                     f"rsi_oversold+below_lower_band regime={regime} "
                     f"rsi={rsi:.2f} price={price:.4f} bb_lower={bb_lower:.4f} adx={adx:.2f}"
                 ),
+                tp_price=tp_price,
+                sl_price=sl_price,
+                trailing_stop_pct=self._trailing_stop_pct,
             )
         if short_condition and not is_short:
+            tp_price, sl_price = self._risk_prices(Signal.SHORT, price, highs, lows, closes)
             return TradeSignal(
                 signal=Signal.SHORT,
                 pair=context.pair,
                 leverage=context.leverage,
+                size_pct=self._size_pct,
                 reason=(
                     f"rsi_overbought+above_upper_band regime={regime} "
                     f"rsi={rsi:.2f} price={price:.4f} bb_upper={bb_upper:.4f} adx={adx:.2f}"
                 ),
+                tp_price=tp_price,
+                sl_price=sl_price,
+                trailing_stop_pct=self._trailing_stop_pct,
             )
 
         return TradeSignal(
