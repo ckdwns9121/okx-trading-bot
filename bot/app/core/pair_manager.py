@@ -237,8 +237,19 @@ class PairManager:
                 return value.strip().lower() in ("1", "true", "yes", "on")
             return bool(value)
 
-        def get_float(key: str, default: float, lo: float, hi: Optional[float] = None) -> float:
-            raw = params.get(key, default)
+        def get_value(key: str, default, alias: Optional[str] = None):
+            if alias is not None and alias in params:
+                return params[alias]
+            return params.get(key, default)
+
+        def get_float(
+            key: str,
+            default: float,
+            lo: float,
+            hi: Optional[float] = None,
+            alias: Optional[str] = None,
+        ) -> float:
+            raw = get_value(key, default, alias)
             try:
                 value = float(raw)
             except (TypeError, ValueError):
@@ -247,8 +258,8 @@ class PairManager:
                 value = min(hi, value)
             return max(lo, value)
 
-        def get_int(key: str, default: int, lo: int) -> int:
-            raw = params.get(key, default)
+        def get_int(key: str, default: int, lo: int, alias: Optional[str] = None) -> int:
+            raw = get_value(key, default, alias)
             try:
                 value = int(raw)
             except (TypeError, ValueError):
@@ -259,15 +270,27 @@ class PairManager:
         default_enabled = strategy_name == "chronos_regime_hybrid"
         return PairRiskPolicy(
             enabled=get_bool("tail_risk_overlay_enabled", default_enabled),
-            hard_stop_pct=get_float("hard_stop_pct", 0.35, 0.05, 10.0),
-            trailing_activation_pct=get_float("trailing_activation_pct", 0.25, 0.05, 10.0),
-            trailing_stop_pct=get_float("trailing_stop_pct", 0.18, 0.05, 10.0),
-            time_stop_candles=get_int("time_stop_candles", 8, 1),
-            time_stop_edge_pct=get_float("time_stop_edge_pct", 0.03, 0.001, 5.0),
-            degrade_after_losses=get_int("degrade_after_losses", 2, 1),
-            pause_after_losses=get_int("pause_after_losses", 3, 1),
-            degrade_size_scale=get_float("degrade_size_scale", 0.5, 0.05, 1.0),
-            pause_minutes=get_int("pause_minutes", 120, 1),
+            hard_stop_pct=get_float("hard_stop_pct", 0.35, 0.05, 10.0, alias="risk_hard_stop_pct"),
+            trailing_activation_pct=get_float(
+                "trailing_activation_pct",
+                0.25,
+                0.05,
+                10.0,
+                alias="risk_trailing_activation_pct",
+            ),
+            trailing_stop_pct=get_float(
+                "trailing_stop_pct",
+                0.18,
+                0.05,
+                10.0,
+                alias="risk_trailing_stop_pct",
+            ),
+            time_stop_candles=get_int("time_stop_candles", 8, 1, alias="risk_time_stop_candles"),
+            time_stop_edge_pct=get_float("time_stop_edge_pct", 0.03, 0.001, 5.0, alias="risk_time_stop_edge_pct"),
+            degrade_after_losses=get_int("degrade_after_losses", 2, 1, alias="risk_degrade_after_losses"),
+            pause_after_losses=get_int("pause_after_losses", 3, 1, alias="risk_pause_after_losses"),
+            degrade_size_scale=get_float("degrade_size_scale", 0.5, 0.05, 1.0, alias="risk_degrade_size_scale"),
+            pause_minutes=get_int("pause_minutes", 120, 1, alias="risk_pause_minutes"),
         )
 
     async def _record_close_outcome(

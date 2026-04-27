@@ -16,6 +16,9 @@ class Settings(BaseSettings):
 
     MAX_DAILY_LOSS_USD: float = 100.0
     MAX_MONTHLY_LOSS_USD: float = 500.0
+    RISK_STARTING_EQUITY_USD: float = 10000.0
+    MAX_TOTAL_DRAWDOWN_PCT: float = 10.0
+    RISK_FAIL_CLOSED: bool = True
     MAX_POSITION_SIZE_PCT: float = 10.0
     MAX_TOTAL_EXPOSURE_PCT: float = 100.0
     MAX_PAIR_EXPOSURE_PCT: float = 100.0

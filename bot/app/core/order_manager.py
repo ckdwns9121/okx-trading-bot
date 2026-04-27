@@ -280,6 +280,18 @@ class OrderManager:
 
             await self._client.set_leverage(pair, leverage)
             async with self._session_factory() as session:
+                existing_position = await repo.get_position(session, pair)
+                if existing_position is not None:
+                    log.warning("open_position_blocked_existing_position")
+                    add_event(
+                        event="order_open_blocked",
+                        level="warning",
+                        pair=pair,
+                        strategy=strategy_name,
+                        message="Blocked by existing open position",
+                    )
+                    return None
+
                 open_total_notional, open_pair_notional = await self._get_open_exposure_notional(session, pair)
                 total_cap_notional = balance * (self._settings.MAX_TOTAL_EXPOSURE_PCT / 100.0)
                 pair_cap_notional = balance * (self._settings.MAX_PAIR_EXPOSURE_PCT / 100.0)

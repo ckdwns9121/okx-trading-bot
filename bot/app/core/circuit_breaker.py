@@ -19,10 +19,16 @@ class CircuitBreaker:
         session_factory,
         max_daily_loss: float,
         max_monthly_loss: float,
+        starting_equity: float = 10_000.0,
+        max_total_drawdown_pct: float = 10.0,
+        fail_closed_on_error: bool = True,
     ) -> None:
         self._session_factory = session_factory
         self._max_daily_loss = abs(max_daily_loss)
         self._max_monthly_loss = abs(max_monthly_loss)
+        self._starting_equity = max(0.0, float(starting_equity))
+        self._max_total_drawdown_pct = max(0.0, float(max_total_drawdown_pct))
+        self._fail_closed_on_error = bool(fail_closed_on_error)
         self._tripped: bool = False
         self._trip_reason: str | None = None
 
@@ -56,14 +62,22 @@ class CircuitBreaker:
                 monthly_summary = await get_pnl_summary(
                     session, source="live", since=month_start
                 )
+                total_summary = await get_pnl_summary(
+                    session, source="live", since=None
+                )
         except Exception as exc:
             logger.error("circuit_breaker_check_error", error=str(exc))
+            if self._fail_closed_on_error:
+                await self.trip("risk_check_error")
+                return False
             return True
 
         daily_pnl: float = daily_summary["total_pnl"]
         monthly_pnl: float = monthly_summary["total_pnl"]
+        total_pnl: float = total_summary["total_pnl"]
         daily_loss = -daily_pnl
         monthly_loss = -monthly_pnl
+        total_loss = -total_pnl
 
         if daily_loss >= self._max_daily_loss:
             await self.trip("daily_loss_limit")
@@ -73,12 +87,20 @@ class CircuitBreaker:
             await self.trip("monthly_loss_limit")
             return False
 
+        total_loss_limit = self._starting_equity * (self._max_total_drawdown_pct / 100.0)
+        if total_loss_limit > 0 and total_loss >= total_loss_limit:
+            await self.trip("total_drawdown_limit")
+            return False
+
         logger.debug(
             "circuit_breaker_ok",
             daily_pnl=daily_pnl,
             monthly_pnl=monthly_pnl,
+            total_pnl=total_pnl,
             max_daily_loss=self._max_daily_loss,
             max_monthly_loss=self._max_monthly_loss,
+            starting_equity=self._starting_equity,
+            max_total_drawdown_pct=self._max_total_drawdown_pct,
         )
         return True
 

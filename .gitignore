@@ -27,6 +27,7 @@ desktop/src-tauri/target/
 .omx/
 .omc/
 .claude/
+bot/data/
 *.log
 
 # OS

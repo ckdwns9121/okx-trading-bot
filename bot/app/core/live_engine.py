@@ -2,6 +2,7 @@
 
 from app.config import settings as app_settings
 from app.core.circuit_breaker import CircuitBreaker
+from app.core.demo_profiles import apply_demo_strategy_defaults
 from app.core.order_manager import OrderManager
 from app.core.pair_manager import PairManager
 from app.core.reconciler import Reconciler
@@ -77,7 +78,12 @@ class LiveEngine:
             pair = config.pair
             leverage = config.leverage
             timeframe = getattr(config, "timeframe", "1m")
-            params = config.parameters_json or {}
+            raw_params = config.parameters_json or {}
+            params = apply_demo_strategy_defaults(
+                strategy_name=strategy_name,
+                params=raw_params,
+                okx_mode=app_settings.OKX_MODE,
+            )
 
             try:
                 self.strategy_registry.get(strategy_name)
@@ -103,6 +109,7 @@ class LiveEngine:
                     strategy=strategy_name,
                     leverage=leverage,
                     timeframe=timeframe,
+                    demo_profile_applied=params != raw_params,
                 )
                 add_event(
                     event="engine_pair_started",
@@ -173,6 +180,9 @@ class LiveEngine:
                 "reason": self.circuit_breaker.trip_reason,
                 "max_daily_loss_usd": app_settings.MAX_DAILY_LOSS_USD,
                 "max_monthly_loss_usd": app_settings.MAX_MONTHLY_LOSS_USD,
+                "risk_starting_equity_usd": app_settings.RISK_STARTING_EQUITY_USD,
+                "max_total_drawdown_pct": app_settings.MAX_TOTAL_DRAWDOWN_PCT,
+                "risk_fail_closed": app_settings.RISK_FAIL_CLOSED,
             },
             "pairs": self.pair_manager.get_status(),
             "mode": app_settings.OKX_MODE,
