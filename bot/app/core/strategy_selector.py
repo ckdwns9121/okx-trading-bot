@@ -41,6 +41,7 @@ class SelectionResult:
 
 REGIME_FIT: dict[str, dict[str, float]] = {
     "trending_up": {
+        "ma_7d_5m": 0.9,
         "example_sma_cross": 0.9,
         "macd_strategy": 0.85,
         "breakout_strategy": 0.9,
@@ -53,6 +54,7 @@ REGIME_FIT: dict[str, dict[str, float]] = {
         "elliott_wave_fib": 0.7,
     },
     "trending_down": {
+        "ma_7d_5m": 0.9,
         "example_sma_cross": 0.85,
         "macd_strategy": 0.85,
         "breakout_strategy": 0.85,
@@ -70,6 +72,7 @@ REGIME_FIT: dict[str, dict[str, float]] = {
         "mean_reversion": 0.95,
         "rsi_bollinger_combo": 0.9,
         "elliott_wave_fib": 0.5,
+        "ma_7d_5m": 0.2,
         "example_sma_cross": 0.2,
         "macd_strategy": 0.3,
         "breakout_strategy": 0.1,
@@ -84,6 +87,7 @@ REGIME_FIT: dict[str, dict[str, float]] = {
         "example_rsi": 0.6,
         "breakout_strategy": 0.5,
         "volume_momentum": 0.6,
+        "ma_7d_5m": 0.35,
         "example_sma_cross": 0.3,
         "macd_strategy": 0.4,
         "multi_ema": 0.35,
@@ -92,6 +96,7 @@ REGIME_FIT: dict[str, dict[str, float]] = {
 
 # Strategy descriptions for reasoning
 _STRATEGY_DESCRIPTIONS: dict[str, str] = {
+    "ma_7d_5m": "uses a 5-minute 7-day SMA cross with Bollinger Band volatility filters and dynamic take-profit",
     "multi_ema": "buys pullbacks to the medium EMA during confirmed uptrends",
     "example_sma_cross": "uses SMA crossover signals to capture trend changes",
     "macd_strategy": "uses MACD histogram divergence to detect momentum shifts",

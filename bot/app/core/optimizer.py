@@ -68,6 +68,16 @@ DEFAULT_PARAM_SPACES: dict[str, dict[str, tuple[float, float]]] = {
         "fast_period": (5, 15),
         "slow_period": (20, 50),
     },
+    "ma_7d_5m": {
+        "ma_period": (1440, 2880),
+        "slope_lookback": (3, 24),
+        "min_slope_pct": (0.0, 0.08),
+        "min_distance_pct": (0.0, 0.2),
+        "bb_period": (12, 40),
+        "bb_std": (1.5, 2.8),
+        "min_bb_width_pct": (0.1, 2.0),
+        "min_bb_room_pct": (0.0, 0.8),
+    },
     "bollinger_band": {
         "period": (10, 30),
         "std_dev": (1.5, 3.0),
