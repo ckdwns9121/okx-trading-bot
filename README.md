@@ -68,6 +68,37 @@ curl -X POST http://127.0.0.1:8000/api/analysis/skill/run \
 
 자세한 계약/정책/Replay 규칙은 `docs/trading-analysis-skill-v1.md`를 참고하세요.
 
+```bash
+# 추천 결과를 설정으로 승격(dry-run preview)
+curl -X POST http://127.0.0.1:8000/api/analysis/skill/promote \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "analysis_request": {
+      "strategy_name":"example_rsi",
+      "baseline_strategy_name":"example_rsi",
+      "pair":"ETH-USDT-SWAP",
+      "timeframe":"1H",
+      "windows":[
+        {"name":"train","start":"2026-03-01T00:00:00","end":"2026-03-05T00:00:00"},
+        {"name":"val","start":"2026-03-05T00:00:00","end":"2026-03-08T00:00:00"},
+        {"name":"holdout","start":"2026-03-08T00:00:00","end":"2026-03-10T00:00:00"}
+      ],
+      "assumptions":{
+        "initial_balance":10000,"leverage":3,"fee_rate":0.0005,"slippage_pct":0.05,
+        "funding_rate_per_8h":0.0001,"cooldown_candles":1,"liquidity_impact_factor":0.1,
+        "maintenance_margin_ratio":0.005,"liquidation_fee_pct":0.002
+      },
+      "search_space":{"rsi_period":[7,21],"oversold":[20,40],"overbought":[60,80]},
+      "top_k":3
+    },
+    "recommendation_rank":1,
+    "dry_run":true,
+    "activate_config":true,
+    "apply_to_live_engine":false,
+    "approval_note":"manual_review_passed"
+  }'
+```
+
 
 ```bash
 # 엔진 시작/정지

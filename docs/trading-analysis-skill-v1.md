@@ -7,6 +7,11 @@
 Runs in-process candidate experiment, backtest, and recommendation flow.
 No internal HTTP self-calls are used.
 
+`POST /api/analysis/skill/promote`
+
+Runs analysis and promotes the selected recommendation into `strategy_configs`.
+Optional flags can apply the config immediately to the running live engine.
+
 ## Request contract
 
 ```json
@@ -86,3 +91,23 @@ Response includes:
 
 - No live deploy automation
 - No strategy source generation/editing
+
+## Promote flow (approval + deploy bridge)
+
+`/api/analysis/skill/promote` request shape:
+
+```json
+{
+  "analysis_request": { "...same as /run..." : "..." },
+  "recommendation_rank": 1,
+  "dry_run": true,
+  "activate_config": true,
+  "apply_to_live_engine": false,
+  "approval_note": "manual_approval"
+}
+```
+
+- `dry_run=true`: 추천안 preview만 반환 (DB 미반영)
+- `dry_run=false`: `strategy_configs` upsert
+- `apply_to_live_engine=true`: 엔진 실행 중이면 해당 pair를 새 config로 재적용
+- `approval_note`: 운영 승인 근거 텍스트

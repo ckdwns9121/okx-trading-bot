@@ -206,7 +206,7 @@ class Recommendation(BaseModel):
     rank: int = Field(..., ge=1)
     params: dict[str, float]
     metrics_by_window: MetricsByWindow
-    baseline_delta_by_window: dict[str, float]
+    baseline_delta_by_window: MetricsByWindow
     replay_pass: bool
     replay_delta: dict[str, float]
 
