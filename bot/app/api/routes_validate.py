@@ -131,14 +131,15 @@ async def run_validation(request: Request, body: ValidateRunRequest) -> Validate
     if pipeline is None:
         from app.core.validation_pipeline import ValidationPipeline
         from app.db.database import AsyncSessionLocal
+        from app.exchange.public_market_data import OKXPublicMarketData
 
-        okx_client = getattr(request.app.state, "okx_client", None)
         registry = getattr(request.app.state, "strategy_registry", None)
-        if okx_client is None or registry is None:
+        if registry is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="OKX client or strategy registry not available",
+                detail="Strategy registry not available",
             )
+        okx_client = OKXPublicMarketData()
         pipeline = ValidationPipeline(okx_client, AsyncSessionLocal, registry)
         request.app.state.validation_pipeline = pipeline
 

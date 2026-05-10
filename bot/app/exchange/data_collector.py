@@ -1,10 +1,9 @@
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
+from typing import Any, Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.exchange.okx_client import OKXClient
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -13,9 +12,16 @@ logger = get_logger(__name__)
 _MS_PER_SECOND = 1000
 
 
-def _ts_to_ms(dt: datetime) -> str:
-    """Convert a datetime to a millisecond timestamp string for OKX API params."""
-    return str(int(dt.timestamp() * _MS_PER_SECOND))
+class CandleClient(Protocol):
+    async def get_candles(
+        self,
+        pair: str,
+        timeframe: str,
+        limit: int = 100,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        ...
 
 
 def _ms_to_dt(ms: str | int) -> datetime:
@@ -26,7 +32,7 @@ def _ms_to_dt(ms: str | int) -> datetime:
 class DataCollector:
     """Fetches historical candles from OKX and persists them to the database."""
 
-    def __init__(self, okx_client: OKXClient, db_session: AsyncSession) -> None:
+    def __init__(self, okx_client: CandleClient, db_session: AsyncSession) -> None:
         self._client = okx_client
         self._session = db_session
 
@@ -75,7 +81,6 @@ class DataCollector:
 
             # Filter to the requested window and build upsert rows
             rows_to_upsert: list[dict[str, Any]] = []
-            oldest_ts_ms: int | None = None
 
             for c in candles:
                 ts_ms = int(c["timestamp"])
@@ -96,9 +101,6 @@ class DataCollector:
                         "volume": c["volume"],
                     }
                 )
-                if oldest_ts_ms is None or ts_ms < oldest_ts_ms:
-                    oldest_ts_ms = ts_ms
-
             if rows_to_upsert:
                 saved = await self._upsert_candles(rows_to_upsert)
                 total_saved += saved

@@ -112,22 +112,16 @@ async def run_optimization(
     log = logger.bind(strategy=body.strategy_name, pair=body.pair)
     log.info("optimization_request_received", iterations=body.n_iterations)
 
-    from app.config import settings
     from app.core.optimizer import ParameterOptimizer
     from app.db.database import AsyncSessionLocal
-    from app.exchange.okx_client import OKXClient
+    from app.exchange.public_market_data import OKXPublicMarketData
 
-    okx_client = OKXClient(
-        api_key=settings.OKX_API_KEY,
-        secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE,
-        mode=settings.OKX_MODE,
-    )
+    market_data = OKXPublicMarketData()
 
     try:
         optimizer = ParameterOptimizer(
             session_factory=AsyncSessionLocal,
-            okx_client=okx_client,
+            okx_client=market_data,
         )
         result = await optimizer.optimize(
             strategy_name=body.strategy_name,
@@ -142,7 +136,7 @@ async def run_optimization(
             objective=body.objective,
         )
     finally:
-        await okx_client.close()
+        await market_data.close()
 
     trials_out = [
         TrialResultOut(

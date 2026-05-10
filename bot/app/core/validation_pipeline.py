@@ -21,7 +21,6 @@ from app.core.backtest_engine import BacktestEngine, BacktestResult
 from app.core.optimizer import ParameterOptimizer
 from app.core.strategy_registry import StrategyRegistry
 from app.exchange.data_collector import DataCollector
-from app.exchange.okx_client import OKXClient
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -81,9 +80,6 @@ def composite_score(sharpe: float, mdd: float, win_rate: float) -> float:
 
     All three terms are in [0, 1] so the result is in [0, 1].
     """
-    norm_sharpe = _clamp(sharpe, -1.0, 3.0) / 3.0  # → [−0.33, 1.0], shifted below
-    # Shift so range becomes [0, 1]: (-1/3 + 1/3) / (1 + 1/3) but simpler to just
-    # remap linearly: (sharpe_clamped - (-1)) / (3 - (-1)) = (sharpe+1)/4
     norm_sharpe = _clamp(sharpe + 1.0, 0.0, 4.0) / 4.0
     norm_mdd = 1.0 - _clamp(mdd, 0.0, 1.0)
     norm_wr = _clamp(win_rate, 0.0, 1.0)
@@ -100,7 +96,7 @@ class ValidationPipeline:
 
     def __init__(
         self,
-        okx_client: OKXClient,
+        okx_client: Any,
         session_factory: async_sessionmaker,
         registry: StrategyRegistry,
     ) -> None:

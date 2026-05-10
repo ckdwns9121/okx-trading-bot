@@ -191,19 +191,13 @@ async def submit_backtest(
     from app.core.backtest_engine import BacktestEngine
     from app.core.strategy_registry import registry as strat_registry
     from app.exchange.data_collector import DataCollector
-    from app.exchange.okx_client import OKXClient
-    from app.config import settings
+    from app.exchange.public_market_data import OKXPublicMarketData
 
-    okx_client = OKXClient(
-        api_key=settings.OKX_API_KEY,
-        secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE,
-        mode=settings.OKX_MODE,
-    )
+    market_data = OKXPublicMarketData()
 
     async with AsyncSessionLocal() as session:
         try:
-            collector = DataCollector(okx_client=okx_client, db_session=session)
+            collector = DataCollector(okx_client=market_data, db_session=session)
             candle_count = await collector.fetch_historical_candles(
                 pair=body.pair, timeframe=body.timeframe,
                 start_date=start_dt, end_date=end_dt,
@@ -211,7 +205,7 @@ async def submit_backtest(
             await session.commit()
             log.info("candles_fetched", count=candle_count)
         finally:
-            await okx_client.close()
+            await market_data.close()
 
         strategy_cls = strat_registry.get(body.strategy_name)
         strategy_inst = strategy_cls()
@@ -297,8 +291,7 @@ async def sensitivity_analysis(
     from app.core.backtest_engine import BacktestEngine
     from app.core.strategy_registry import registry as strat_registry
     from app.exchange.data_collector import DataCollector
-    from app.exchange.okx_client import OKXClient
-    from app.config import settings
+    from app.exchange.public_market_data import OKXPublicMarketData
     from app.db.database import AsyncSessionLocal
 
     registry = request.app.state.strategy_registry
@@ -309,20 +302,17 @@ async def sensitivity_analysis(
     end_dt = datetime.fromisoformat(body.end_date).replace(tzinfo=None)
 
     # Fetch candles once
-    okx_client = OKXClient(
-        api_key=settings.OKX_API_KEY, secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE, mode=settings.OKX_MODE,
-    )
+    market_data = OKXPublicMarketData()
     async with AsyncSessionLocal() as session:
         try:
-            collector = DataCollector(okx_client=okx_client, db_session=session)
+            collector = DataCollector(okx_client=market_data, db_session=session)
             await collector.fetch_historical_candles(
                 pair=body.pair, timeframe=body.timeframe,
                 start_date=start_dt, end_date=end_dt,
             )
             await session.commit()
         finally:
-            await okx_client.close()
+            await market_data.close()
 
     results = []
     for fee in body.fee_rates:

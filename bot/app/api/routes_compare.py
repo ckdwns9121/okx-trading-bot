@@ -95,12 +95,11 @@ async def run_comparison(
     request: Request,
 ) -> list[CompareResultOut]:
     """Execute backtests for every strategy x pair combination and return comparison metrics."""
-    from app.config import settings
     from app.core.backtest_engine import BacktestEngine
     from app.core.strategy_registry import registry
     from app.db.database import AsyncSessionLocal
     from app.exchange.data_collector import DataCollector
-    from app.exchange.okx_client import OKXClient
+    from app.exchange.public_market_data import OKXPublicMarketData
 
     # Validate all strategies exist
     available = registry.list_all()
@@ -134,15 +133,10 @@ async def run_comparison(
         log_pair = log.bind(pair=pair)
 
         # Fetch and persist candles for this pair
-        okx_client = OKXClient(
-            api_key=settings.OKX_API_KEY,
-            secret=settings.OKX_SECRET,
-            passphrase=settings.OKX_PASSPHRASE,
-            mode=settings.OKX_MODE,
-        )
+        market_data = OKXPublicMarketData()
         async with AsyncSessionLocal() as session:
             try:
-                collector = DataCollector(okx_client=okx_client, db_session=session)
+                collector = DataCollector(okx_client=market_data, db_session=session)
                 candle_count = await collector.fetch_historical_candles(
                     pair=pair,
                     timeframe=body.timeframe,
@@ -152,7 +146,7 @@ async def run_comparison(
                 await session.commit()
                 log_pair.info("candles_fetched", count=candle_count)
             finally:
-                await okx_client.close()
+                await market_data.close()
 
         # Run each strategy against the cached candles
         for strategy_name in body.strategies:

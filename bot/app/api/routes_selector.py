@@ -74,24 +74,18 @@ async def detect_regime(
     timeframe: str = "1H",
 ) -> RegimeOut:
     """Fetch recent candles and detect the current market regime."""
-    from app.config import settings
     from app.core.regime_detector import MarketRegimeDetector
-    from app.exchange.okx_client import OKXClient
+    from app.exchange.public_market_data import OKXPublicMarketData
 
     log = logger.bind(pair=pair, timeframe=timeframe)
     log.info("regime_detection_requested")
 
-    okx_client = OKXClient(
-        api_key=settings.OKX_API_KEY,
-        secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE,
-        mode=settings.OKX_MODE,
-    )
+    market_data = OKXPublicMarketData()
 
     try:
-        raw_candles = await okx_client.get_candles(pair=pair, timeframe=timeframe, limit=100)
+        raw_candles = await market_data.get_candles(pair=pair, timeframe=timeframe, limit=100)
     finally:
-        await okx_client.close()
+        await market_data.close()
 
     if not raw_candles:
         raise HTTPException(
@@ -130,25 +124,19 @@ async def recommend_strategy(
     request: Request,
 ) -> SelectionResultOut:
     """Analyse market regime and recommend the best strategy via backtesting."""
-    from app.config import settings
     from app.core.strategy_selector import StrategySelector
     from app.db.database import AsyncSessionLocal
-    from app.exchange.okx_client import OKXClient
+    from app.exchange.public_market_data import OKXPublicMarketData
 
     log = logger.bind(pair=body.pair, timeframe=body.timeframe)
     log.info("strategy_recommendation_requested")
 
-    okx_client = OKXClient(
-        api_key=settings.OKX_API_KEY,
-        secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE,
-        mode=settings.OKX_MODE,
-    )
+    market_data = OKXPublicMarketData()
 
     try:
         selector = StrategySelector(
             session_factory=AsyncSessionLocal,
-            okx_client=okx_client,
+            okx_client=market_data,
         )
         result = await selector.select(
             pair=body.pair,
@@ -158,7 +146,7 @@ async def recommend_strategy(
             leverage=body.leverage,
         )
     finally:
-        await okx_client.close()
+        await market_data.close()
 
     return SelectionResultOut(
         pair=result.pair,
