@@ -243,3 +243,53 @@ async def test_order_manager_blocks_duplicate_open_position_before_order_placeme
 
     assert result is None
     client.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_order_manager_microstructure_gate_blocks_before_leverage_or_order():
+    settings = Settings(
+        OKX_API_KEY="dummy",
+        OKX_SECRET="dummy",
+        OKX_PASSPHRASE="dummy",
+        MAX_POSITION_SIZE_PCT=10.0,
+        MICROSTRUCTURE_GATE_ENABLED=True,
+        MICROSTRUCTURE_MAX_SPREAD_PCT=0.1,
+        MICROSTRUCTURE_MIN_VISIBLE_DEPTH_NOTIONAL=100.0,
+        MICROSTRUCTURE_MAX_MARKET_DATA_AGE_SECONDS=10.0,
+    )
+    client = _FakeOKXClient()
+    client.set_leverage = AsyncMock(side_effect=AssertionError("set_leverage should be gated first"))
+    client.place_order = AsyncMock(side_effect=AssertionError("place_order should not be called"))
+    market_data = SimpleNamespace(
+        get_order_book_top_depth=AsyncMock(
+            return_value={
+                "best_bid": 100.0,
+                "best_ask": 101.0,
+                "ask_depth_notional": 1000.0,
+                "bid_depth_notional": 1000.0,
+                "timestamp": None,
+            }
+        )
+    )
+    order_manager = OrderManager(
+        okx_client=client,
+        session_factory=lambda: _FakeSessionCtx(),
+        circuit_breaker=SimpleNamespace(check=AsyncMock(return_value=True)),
+        settings=settings,
+        market_data_client=market_data,
+    )
+
+    with (
+        patch("app.core.order_manager.repo.get_position", new=AsyncMock(return_value=None)),
+        patch("app.core.order_manager.repo.get_positions", new=AsyncMock(return_value=[])),
+    ):
+        result = await order_manager.open_position(
+            "BTC-USDT-SWAP",
+            TradeSignal(signal=Signal.LONG, pair="BTC-USDT-SWAP", leverage=2),
+            strategy_name="rsi_bollinger_regime",
+        )
+
+    assert result is None
+    market_data.get_order_book_top_depth.assert_awaited_once()
+    client.set_leverage.assert_not_awaited()
+    client.place_order.assert_not_awaited()

@@ -10,10 +10,12 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.core.circuit_breaker import CircuitBreaker
+from app.core.microstructure import evaluate_microstructure_gate
 from app.core.runtime_events import add_event
 from app.core.strategy_base import Signal, TradeSignal
 from app.db import repository as repo
 from app.exchange.okx_client import OKXClient
+from app.exchange.public_market_data import OKXPublicMarketData
 from app.logging_config import get_logger
 from app.models.strategy_config import StrategyConfig
 
@@ -28,12 +30,14 @@ class OrderManager:
         circuit_breaker: CircuitBreaker,
         settings: Settings,
         telegram_notifier=None,
+        market_data_client=None,
     ) -> None:
         self._client = okx_client
         self._session_factory = session_factory
         self._cb = circuit_breaker
         self._settings = settings
         self._telegram = telegram_notifier
+        self._market_data = market_data_client
 
     async def _send_telegram(self, text: str) -> None:
         if self._telegram is None:
@@ -42,6 +46,11 @@ class OrderManager:
             await self._telegram.send_text(text)
         except Exception as exc:
             logger.warning("telegram_notify_failed", error=str(exc))
+
+    async def close(self) -> None:
+        close = getattr(self._market_data, "close", None)
+        if close is not None:
+            await close()
 
     @staticmethod
     def _get_contract_value(pair: str) -> float:
@@ -65,6 +74,72 @@ class OrderManager:
         except Exception:
             pass
         return 0.0
+
+    async def _get_market_data_client(self):
+        if self._market_data is None:
+            self._market_data = OKXPublicMarketData()
+        return self._market_data
+
+    async def _check_microstructure_gate(
+        self,
+        *,
+        pair: str,
+        side: str,
+        notional: float,
+        strategy_name: str | None,
+    ) -> bool:
+        if not self._settings.MICROSTRUCTURE_GATE_ENABLED:
+            return True
+
+        try:
+            market_data = await self._get_market_data_client()
+            snapshot = await market_data.get_order_book_top_depth(
+                pair,
+                depth=self._settings.MICROSTRUCTURE_ORDER_BOOK_DEPTH,
+            )
+        except Exception as exc:
+            details = evaluate_microstructure_gate(
+                side=side,
+                order_notional=notional,
+                max_spread_pct=self._settings.MICROSTRUCTURE_MAX_SPREAD_PCT,
+                min_visible_depth_notional=self._settings.MICROSTRUCTURE_MIN_VISIBLE_DEPTH_NOTIONAL,
+                max_market_data_age_seconds=self._settings.MICROSTRUCTURE_MAX_MARKET_DATA_AGE_SECONDS,
+                market_data={},
+            )
+            details.update({
+                "reason": "market_data_fetch_failed",
+                "error": str(exc),
+            })
+            add_event(
+                event="order_open_blocked",
+                level="warning",
+                pair=pair,
+                strategy=strategy_name,
+                message="Blocked by microstructure gate",
+                details=details,
+            )
+            return False
+
+        payload = evaluate_microstructure_gate(
+            side=side,
+            order_notional=notional,
+            max_spread_pct=self._settings.MICROSTRUCTURE_MAX_SPREAD_PCT,
+            min_visible_depth_notional=self._settings.MICROSTRUCTURE_MIN_VISIBLE_DEPTH_NOTIONAL,
+            max_market_data_age_seconds=self._settings.MICROSTRUCTURE_MAX_MARKET_DATA_AGE_SECONDS,
+            market_data=snapshot,
+        )
+        if payload["allow"]:
+            return True
+
+        add_event(
+            event="order_open_blocked",
+            level="warning",
+            pair=pair,
+            strategy=strategy_name,
+            message="Blocked by microstructure gate",
+            details=payload,
+        )
+        return False
 
     async def _get_usdt_balance(self) -> float:
         result = await self._client.get_account_balance()
@@ -278,7 +353,6 @@ class OrderManager:
             ct_val = self._get_contract_value(pair)
             pos_side = "long" if signal.signal == Signal.LONG else "short"
 
-            await self._client.set_leverage(pair, leverage)
             async with self._session_factory() as session:
                 existing_position = await repo.get_position(session, pair)
                 if existing_position is not None:
@@ -333,6 +407,17 @@ class OrderManager:
                         ct_val=ct_val,
                     )
                     return None
+
+                if not await self._check_microstructure_gate(
+                    pair=pair,
+                    side=side,
+                    notional=notional,
+                    strategy_name=strategy_name,
+                ):
+                    log.warning("open_position_blocked_microstructure")
+                    return None
+
+                await self._client.set_leverage(pair, leverage)
 
                 split_parts = (
                     max(1, int(self._settings.ORDER_SPLIT_PARTS))

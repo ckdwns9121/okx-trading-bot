@@ -158,6 +158,11 @@ class LiveEngine:
         except Exception as exc:
             log.error("live_engine_stop_all_error", error=str(exc))
 
+        try:
+            await self.order_manager.close()
+        except Exception as exc:
+            log.error("order_manager_stop_error", error=str(exc))
+
         self.is_running = False
         log.info(
             "live_engine_stopped",
