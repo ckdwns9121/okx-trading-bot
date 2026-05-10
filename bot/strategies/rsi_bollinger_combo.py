@@ -1,5 +1,12 @@
 import numpy as np
 
+from app.core.quant_research import (
+    VolatilityRegime,
+    classify_volatility_regime,
+    compute_atr_pct,
+    compute_bb_width_pct,
+    volatility_profile_matches,
+)
 from app.core.strategy_base import BaseStrategy, Signal, TradeSignal, TradingContext
 from app.logging_config import get_logger
 
@@ -27,13 +34,16 @@ class RSIBollingerComboStrategy(BaseStrategy):
         self._rsi_overbought: float = 65.0
         self._bb_period: int = 20
         self._bb_std: float = 2.0
+        self._atr_period: int = 14
+        self._volatility_filter_enabled: bool = False
+        self._volatility_profile: str = "normal"
 
     @property
     def lookback_period(self) -> int:
         return 21
 
     def configure(self, params: dict) -> None:
-        """Accept optional overrides: rsi_period, rsi_oversold, rsi_overbought, bb_period, bb_std."""
+        """Accept optional overrides for RSI, Bollinger Bands, and opt-in volatility filtering."""
         if "rsi_period" in params:
             period = int(params["rsi_period"])
             if period <= 0:
@@ -50,6 +60,21 @@ class RSIBollingerComboStrategy(BaseStrategy):
             self._bb_period = period
         if "bb_std" in params:
             self._bb_std = float(params["bb_std"])
+        if "atr_period" in params:
+            period = int(params["atr_period"])
+            if period <= 0:
+                raise ValueError("atr_period must be a positive integer")
+            self._atr_period = period
+        if "volatility_filter_enabled" in params:
+            self._volatility_filter_enabled = self._parse_bool(
+                params["volatility_filter_enabled"],
+                "volatility_filter_enabled",
+            )
+        if "volatility_profile" in params:
+            profile = str(params["volatility_profile"]).strip().lower()
+            if profile not in {"low", "normal", "high", "any"}:
+                raise ValueError("volatility_profile must be one of: low, normal, high, any")
+            self._volatility_profile = profile
         logger.info(
             "rsi_bollinger_combo_configured",
             rsi_period=self._rsi_period,
@@ -57,7 +82,22 @@ class RSIBollingerComboStrategy(BaseStrategy):
             rsi_overbought=self._rsi_overbought,
             bb_period=self._bb_period,
             bb_std=self._bb_std,
+            atr_period=self._atr_period,
+            volatility_filter_enabled=self._volatility_filter_enabled,
+            volatility_profile=self._volatility_profile,
         )
+
+    @staticmethod
+    def _parse_bool(value: object, name: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+        raise ValueError(f"{name} must be a boolean")
 
     # ------------------------------------------------------------------ #
     # Indicator calculations                                               #
@@ -99,6 +139,19 @@ class RSIBollingerComboStrategy(BaseStrategy):
         lower = middle - self._bb_std * std
         return upper, middle, lower
 
+    def _compute_volatility_regime(
+        self,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        bb_upper: float,
+        bb_middle: float,
+        bb_lower: float,
+    ) -> VolatilityRegime:
+        bb_width_pct = compute_bb_width_pct(bb_upper, bb_middle, bb_lower)
+        atr_pct = compute_atr_pct(highs, lows, closes, period=self._atr_period)
+        return classify_volatility_regime(bb_width_pct, atr_pct)
+
     # ------------------------------------------------------------------ #
     # Signal generation                                                    #
     # ------------------------------------------------------------------ #
@@ -111,6 +164,8 @@ class RSIBollingerComboStrategy(BaseStrategy):
     ) -> TradeSignal:
         all_candles = history + [candle]
         closes = np.array([c["close"] for c in all_candles], dtype=float)
+        highs = np.array([c["high"] for c in all_candles], dtype=float)
+        lows = np.array([c["low"] for c in all_candles], dtype=float)
 
         min_required = max(self._rsi_period + 1, self._bb_period)
         if len(closes) < min_required:
@@ -123,6 +178,7 @@ class RSIBollingerComboStrategy(BaseStrategy):
         rsi = self._compute_rsi(closes)
         bb_upper, bb_middle, bb_lower = self._compute_bollinger_bands(closes)
         price = float(candle["close"])
+        volatility = self._compute_volatility_regime(highs, lows, closes, bb_upper, bb_middle, bb_lower)
 
         logger.debug(
             "rsi_bollinger_combo_indicators",
@@ -132,6 +188,9 @@ class RSIBollingerComboStrategy(BaseStrategy):
             bb_middle=round(bb_middle, 4),
             bb_lower=round(bb_lower, 4),
             price=round(price, 4),
+            volatility_regime=volatility.regime,
+            bb_width_pct=round(volatility.bb_width_pct, 4),
+            atr_pct=round(volatility.atr_pct, 4),
         )
 
         position = context.current_position
@@ -151,6 +210,18 @@ class RSIBollingerComboStrategy(BaseStrategy):
 
         long_condition = rsi < self._rsi_oversold and price < bb_lower
         short_condition = rsi > self._rsi_overbought and price > bb_upper
+
+        if self._volatility_filter_enabled and (long_condition or short_condition):
+            if not volatility_profile_matches(self._volatility_profile, volatility.regime):
+                return TradeSignal(
+                    signal=Signal.HOLD,
+                    pair=context.pair,
+                    reason=(
+                        f"blocked_by_volatility_profile regime={volatility.regime} "
+                        f"target={self._volatility_profile} bb_width_pct={volatility.bb_width_pct:.4f} "
+                        f"atr_pct={volatility.atr_pct:.4f}"
+                    ),
+                )
 
         if long_condition and not is_long:
             return TradeSignal(
