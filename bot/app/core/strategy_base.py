@@ -58,14 +58,3 @@ class BaseStrategy(ABC):
     @abstractmethod
     def configure(self, params: dict) -> None:
         ...
-
-
-def should_skip_on_funding(rate: Optional[float], threshold: float = 0.001) -> bool:
-    """Return True if the absolute funding rate exceeds threshold.
-
-    Useful for strategies that want to avoid entering when funding is extreme,
-    as extreme funding often precedes mean reversion.
-    """
-    if rate is None:
-        return False
-    return abs(rate) > threshold

@@ -82,14 +82,6 @@ def list_events(limit: int = 100) -> list[dict[str, Any]]:
         return list(_events)[-clamped:]
 
 
-def clear_events() -> None:
-    """Clear in-memory buffered events only."""
-    global _seq
-    with _lock:
-        _events.clear()
-        _seq = 0
-
-
 def configure_persistence(
     *,
     session_factory: Callable[[], Any],

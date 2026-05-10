@@ -47,7 +47,6 @@ cd dashboard && npm run lint                 # eslint
 - **`app/main.py`** — FastAPI app factory with lifespan. Initializes OKXClient, strategy registry, circuit breaker, and live engine. Components are lazily imported so the API starts even if modules are missing.
 - **`app/config.py`** — `pydantic-settings` config from `.env`. Key settings: `OKX_MODE` (demo/live), `DATABASE_URL`, risk limits.
 - **`app/exchange/okx_client.py`** — Async OKX REST API v5 wrapper with HMAC signing and rate limiting (20 req/2s). Uses `httpx`.
-- **`app/exchange/okx_websocket.py`** — WebSocket client for real-time data.
 - **`app/core/strategy_base.py`** — `BaseStrategy` ABC. Strategies must implement `on_candle()`, `lookback_period`, and `configure()`. Signals: LONG/SHORT/CLOSE/HOLD.
 - **`app/core/strategy_registry.py`** — Singleton registry with `auto_discover()` that scans `bot/strategies/` for `BaseStrategy` subclasses at startup.
 - **`app/core/backtest_engine.py`** — Backtesting engine.

@@ -1,6 +1,5 @@
 import type {
   BacktestParams,
-  BacktestRun,
   BacktestRunWithTrades,
   CompareResult,
   AccountBalance,
@@ -8,16 +7,13 @@ import type {
   MarketTicker,
   MonteCarloResult,
   OptimizationResult,
-  Order,
   PairStatus,
   ValidationProgress,
   ValidationResult,
   ParamSpace,
   PnlSummary,
   Position,
-  RegimeResult,
   SelectionResult,
-  SensitivityResult,
   StrategyConfig,
   StrategyInfo,
   TradingLogEvent,
@@ -85,19 +81,6 @@ export async function getTrades(
   params: TradeQueryParams = {},
 ): Promise<Trade[]> {
   return fetchJson<Trade[]>(`/api/trades${buildQuery(params)}`);
-}
-
-// ── Orders ───────────────────────────────────────────────────────────────────
-
-export interface OrderQueryParams {
-  [key: string]: string | number | boolean | undefined | null;
-  limit?: number;
-}
-
-export async function getOrders(
-  params: OrderQueryParams = {},
-): Promise<Order[]> {
-  return fetchJson<Order[]>(`/api/orders${buildQuery(params)}`);
 }
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -171,39 +154,12 @@ export async function runBacktest(
   return fetchJson<BacktestRunWithTrades>(`/api/backtest/${submit.run_id}`);
 }
 
-export async function getBacktestRun(
-  id: string,
-): Promise<BacktestRunWithTrades> {
-  return fetchJson<BacktestRunWithTrades>(`/api/backtest/${id}`);
-}
-
-export async function getBacktestRuns(): Promise<BacktestRun[]> {
-  return fetchJson<BacktestRun[]>("/api/backtest");
-}
-
 export async function getBacktestAnalytics(id: string): Promise<TradeAnalytics> {
   return fetchJson<TradeAnalytics>(`/api/backtest/${id}/analytics`);
 }
 
 export async function runMonteCarlo(id: string): Promise<MonteCarloResult> {
   return fetchJson<MonteCarloResult>(`/api/backtest/${id}/monte-carlo`, { method: "POST" });
-}
-
-export async function runSensitivity(params: {
-  strategy_name: string;
-  pair: string;
-  timeframe: string;
-  start_date: string;
-  end_date: string;
-  initial_balance?: number;
-  leverage?: number;
-  fee_rates?: number[];
-  slippage_pcts?: number[];
-}): Promise<SensitivityResult[]> {
-  return fetchJson<SensitivityResult[]>("/api/backtest/sensitivity", {
-    method: "POST",
-    body: JSON.stringify(params),
-  });
 }
 
 // ── Markets ──────────────────────────────────────────────────────────────────
@@ -239,25 +195,6 @@ export async function getConfig(): Promise<StrategyConfig[]> {
     enabled: r.is_active,
     params: r.parameters_json ?? {},
   }));
-}
-
-export async function updateConfig(
-  config: StrategyConfig[],
-): Promise<void> {
-  // Backend accepts single upsert per call — send each item individually
-  for (const c of config) {
-    await fetchJson<unknown>("/api/config", {
-      method: "PUT",
-      body: JSON.stringify({
-        strategy_name: c.strategy_name,
-        pair: c.pair,
-        timeframe: c.timeframe || "1m",
-        parameters_json: c.params ?? null,
-        leverage: c.leverage,
-        is_active: c.enabled ?? true,
-      }),
-    });
-  }
 }
 
 export async function upsertSingleConfig(
@@ -362,11 +299,6 @@ export async function cancelValidation(): Promise<{
 }
 
 // ── Selector ─────────────────────────────────────────────────────────────────
-
-export async function getRegime(pair: string, timeframe?: string): Promise<RegimeResult> {
-  const tf = timeframe || "1H";
-  return fetchJson<RegimeResult>(`/api/selector/regime/${encodeURIComponent(pair)}?timeframe=${tf}`);
-}
 
 export async function getRecommendation(params: {
   pair: string;

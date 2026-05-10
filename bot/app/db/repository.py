@@ -1,6 +1,6 @@
 """CRUD operations for all models using SQLAlchemy async sessions."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
@@ -45,57 +45,9 @@ async def get_candles(
     return list(result.scalars().all())
 
 
-async def upsert_candles(
-    session: AsyncSession,
-    candles: list[dict[str, Any]],
-) -> int:
-    """Insert or update candles (upsert on pair+timeframe+timestamp). Returns row count."""
-    if not candles:
-        return 0
-
-    stmt = (
-        pg_insert(Candle)
-        .values(candles)
-        .on_conflict_do_update(
-            constraint="uq_candle_pair_timeframe_timestamp",
-            set_={
-                "open": pg_insert(Candle).excluded.open,
-                "high": pg_insert(Candle).excluded.high,
-                "low": pg_insert(Candle).excluded.low,
-                "close": pg_insert(Candle).excluded.close,
-                "volume": pg_insert(Candle).excluded.volume,
-            },
-        )
-    )
-    result = await session.execute(stmt)
-    await session.flush()
-    return result.rowcount
-
-
 # ------------------------------------------------------------------ #
 # Trade operations                                                     #
 # ------------------------------------------------------------------ #
-
-
-async def get_trades(
-    session: AsyncSession,
-    source: Optional[str] = None,
-    pair: Optional[str] = None,
-    strategy: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> list[Trade]:
-    """Return trades with optional filters."""
-    stmt = select(Trade).order_by(Trade.entry_time.desc())
-    if source is not None:
-        stmt = stmt.where(Trade.source == source)
-    if pair is not None:
-        stmt = stmt.where(Trade.pair == pair)
-    if strategy is not None:
-        stmt = stmt.where(Trade.strategy_name == strategy)
-    stmt = stmt.limit(limit).offset(offset)
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
 
 
 async def get_pnl_summary(
@@ -222,14 +174,6 @@ async def update_position(
 # ------------------------------------------------------------------ #
 
 
-async def get_backtest_runs(session: AsyncSession) -> list[BacktestRun]:
-    """Return all backtest runs ordered by created_at desc."""
-    result = await session.execute(
-        select(BacktestRun).order_by(BacktestRun.created_at.desc())
-    )
-    return list(result.scalars().all())
-
-
 async def get_backtest_run(session: AsyncSession, run_id: UUID) -> Optional[BacktestRun]:
     """Return a single backtest run by id."""
     result = await session.execute(
@@ -259,12 +203,6 @@ async def get_active_configs(session: AsyncSession) -> list[StrategyConfig]:
     result = await session.execute(
         select(StrategyConfig).where(StrategyConfig.is_active.is_(True))
     )
-    return list(result.scalars().all())
-
-
-async def get_configs(session: AsyncSession) -> list[StrategyConfig]:
-    """Return all strategy configs."""
-    result = await session.execute(select(StrategyConfig))
     return list(result.scalars().all())
 
 

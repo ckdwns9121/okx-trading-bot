@@ -289,7 +289,6 @@ class AnalysisExperimentRunner:
                     replay_delta = {
                         k: replay_metrics[k] - first[k] for k in CANONICAL_METRIC_KEYS
                     }
-                    original = first
                     replay_pass = replay_passes_policy(first, replay_metrics)
                     log.info(
                         "analysis_replay_completed",
@@ -350,7 +349,6 @@ class AnalysisExperimentRunner:
                 if failed / max(1, attempted) > run_limits.partial_failure_threshold:
                     break
 
-        attempted_count = max(1, attempted)
         failure_ratio = failed / max(1, attempted)
         if attempted == 0:
             failure_ratio = 1.0
