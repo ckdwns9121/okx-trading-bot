@@ -15,7 +15,7 @@ import logging
 import sys
 import uuid
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
@@ -28,15 +28,18 @@ REPO_DIR = BOT_DIR.parent
 if str(BOT_DIR) not in sys.path:
     sys.path.insert(0, str(BOT_DIR))
 
-from app.config import settings  # noqa: E402
+from app.core.analytics import monte_carlo_simulation  # noqa: E402
 from app.core.backtest_engine import _compute_metrics, _simulate_sync  # noqa: E402
 from app.core.strategy_base import Signal, TradeSignal, TradingContext  # noqa: E402
 from app.core.strategy_registry import auto_discover, registry  # noqa: E402
-from app.exchange.okx_client import OKXClient  # noqa: E402
+from app.exchange.public_market_data import OKXPublicMarketData  # noqa: E402
 
 DEFAULT_PAIRS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP")
 DEFAULT_TIMEFRAMES = ("15m", "1H")
 MS_PER_SECOND = 1000
+DEFAULT_POSITION_SIZE_SCENARIOS = (5.0, 10.0, 25.0, 100.0)
+RUIN_PROBABILITY_LIMIT = 0.01
+P95_MAX_DRAWDOWN_LIMIT = 0.40
 
 
 @dataclass(frozen=True)
@@ -88,7 +91,7 @@ def parse_csv(raw: str) -> list[str]:
 
 
 async def fetch_window(
-    client: OKXClient,
+    client: OKXPublicMarketData,
     *,
     pair: str,
     timeframe: str,
@@ -134,6 +137,61 @@ def strategy_params(strategy_name: str) -> dict[str, Any]:
     return {}
 
 
+def scaled_trade_dicts(trades: list[Any], size_pct: float) -> list[dict[str, Any]]:
+    """Return trade dicts with PnL scaled to a position-size scenario."""
+    scale = max(0.0, float(size_pct)) / 100.0
+    return [
+        {
+            "pnl": float(trade.pnl) * scale,
+            "entry_time": trade.entry_time,
+            "exit_time": trade.exit_time,
+        }
+        for trade in trades
+    ]
+
+
+def monte_carlo_survival_summary(
+    trades: list[Any],
+    *,
+    initial_balance: float,
+    position_size_pcts: Iterable[float] = DEFAULT_POSITION_SIZE_SCENARIOS,
+    n_simulations: int = 1000,
+) -> dict[str, dict[str, float]]:
+    """Run position-size survival scenarios without mutating source trades."""
+    summaries: dict[str, dict[str, float]] = {}
+    for size_pct in position_size_pcts:
+        mc_result = monte_carlo_simulation(
+            scaled_trade_dicts(trades, size_pct),
+            initial_balance=initial_balance,
+            n_simulations=n_simulations,
+        )
+        summaries[f"{size_pct:g}"] = asdict(mc_result)
+    return summaries
+
+
+def primary_survival_metrics(
+    monte_carlo: dict[str, dict[str, float]] | None,
+    *,
+    position_size_pct: float,
+) -> dict[str, float]:
+    """Extract report-gating MC metrics for one position-size scenario."""
+    if not monte_carlo:
+        raise ValueError("monte_carlo scenarios are missing")
+
+    key = f"{position_size_pct:g}"
+    selected = monte_carlo.get(key)
+    if selected is None:
+        available = ", ".join(sorted(monte_carlo)) or "none"
+        raise ValueError(
+            f"survival position-size scenario {key}% is missing; available scenarios: {available}"
+        )
+    return {
+        "p95_max_drawdown": float(selected.get("p95_max_drawdown", 0.0)),
+        "ruin_probability": float(selected.get("ruin_probability", 0.0)),
+        "p5_final_balance": float(selected.get("p5_final_balance", 0.0)),
+    }
+
+
 async def run_strategy(
     *,
     strategy_name: str,
@@ -150,6 +208,8 @@ async def run_strategy(
     liquidity_impact_factor: float,
     maintenance_margin_ratio: float,
     liquidation_fee_pct: float,
+    monte_carlo_simulations: int,
+    survival_position_size_pct: float,
 ) -> dict[str, Any]:
     strategy_cls = registry.get(strategy_name)
     strategy = strategy_cls()
@@ -182,8 +242,17 @@ async def run_strategy(
         )
         try:
             signal = await strategy.on_candle(current, list(history_window), context)
-        except Exception:
+        except Exception as exc:
             strategy_errors += 1
+            logging.getLogger(__name__).warning(
+                "strategy_on_candle_error",
+                extra={
+                    "strategy": strategy_name,
+                    "pair": pair,
+                    "timeframe": timeframe,
+                    "error": str(exc),
+                },
+            )
             signal = TradeSignal(signal=Signal.HOLD, pair=pair, leverage=leverage)
         signals.append(signal)
 
@@ -229,9 +298,18 @@ async def run_strategy(
     losing = abs(sum(t.pnl for t in trades if t.pnl < 0.0))
     profit_factor = winning / losing if losing > 0.0 else (winning if winning > 0.0 else 0.0)
     exit_counts = Counter(t.exit_reason or "unknown" for t in trades)
+    mc_summary = monte_carlo_survival_summary(
+        trades,
+        initial_balance=initial_balance,
+        n_simulations=monte_carlo_simulations,
+    )
+    survival = primary_survival_metrics(
+        mc_summary,
+        position_size_pct=survival_position_size_pct,
+    )
 
     return {
-        "status": "ok",
+        "status": "partial_strategy_error" if strategy_errors else "ok",
         "run_id": str(uuid.uuid4()),
         "parameters": params,
         "lookback_period": lookback,
@@ -246,12 +324,26 @@ async def run_strategy(
         "profit_factor": profit_factor,
         "strategy_errors": strategy_errors,
         "exit_counts": dict(sorted(exit_counts.items())),
+        "monte_carlo": mc_summary,
+        "survival_position_size_pct": survival_position_size_pct,
+        "p95_max_drawdown": survival["p95_max_drawdown"],
+        "ruin_probability": survival["ruin_probability"],
+        "p5_final_balance": survival["p5_final_balance"],
+        "promotion_blocked": (
+            survival["ruin_probability"] > RUIN_PROBABILITY_LIMIT
+            or survival["p95_max_drawdown"] > P95_MAX_DRAWDOWN_LIMIT
+        ),
     }
 
 
 def verdict_for(summary: dict[str, Any]) -> str:
     if summary["ok_runs"] == 0:
         return "데이터부족/오류"
+    if (
+        summary.get("max_ruin_probability", 0.0) > RUIN_PROBABILITY_LIMIT
+        or summary.get("max_p95_max_drawdown_pct", 0.0) > P95_MAX_DRAWDOWN_LIMIT * 100.0
+    ):
+        return "실거래 금지"
     if summary["positive_runs"] == summary["ok_runs"] and summary["max_drawdown_pct"] <= 25.0:
         return "paper 후보"
     if summary["total_pnl"] > 0 and summary["positive_rate_pct"] >= 50.0 and summary["max_drawdown_pct"] <= 40.0:
@@ -294,6 +386,19 @@ def summarize(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 else 0.0
             ),
             "max_drawdown_pct": max((row["max_drawdown"] for row in ok_rows), default=0.0) * 100.0,
+            "max_p95_max_drawdown_pct": max(
+                (row.get("p95_max_drawdown", 0.0) for row in ok_rows),
+                default=0.0,
+            )
+            * 100.0,
+            "max_ruin_probability": max(
+                (row.get("ruin_probability", 0.0) for row in ok_rows),
+                default=0.0,
+            ),
+            "worst_p5_final_balance": min(
+                (row.get("p5_final_balance", 0.0) for row in ok_rows),
+                default=0.0,
+            ),
             "total_trades": sum(row.get("trade_count", 0) for row in ok_rows),
             "error_runs": sum(1 for row in rows if row["status"] not in ("ok",)),
             "best_run": best,
@@ -305,10 +410,23 @@ def summarize(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         summary["verdict"] = verdict_for(summary)
         summaries.append(summary)
 
-    return sorted(
+    sorted_by_survival = sorted(
         summaries,
         key=lambda row: (
+            row["max_ruin_probability"],
+            row["max_p95_max_drawdown_pct"],
+            -row["median_pnl"],
+            -row["total_pnl"],
+        ),
+    )
+    for idx, row in enumerate(sorted_by_survival, start=1):
+        row["survival_rank"] = idx
+
+    return sorted(
+        sorted_by_survival,
+        key=lambda row: (
             row["verdict"] not in ("paper 후보", "연구 후보"),
+            row["survival_rank"],
             -row["total_pnl"],
             row["max_drawdown_pct"],
         ),
@@ -343,7 +461,8 @@ def conclusion_lines(payload: dict[str, Any]) -> list[str]:
     research_candidates = [row for row in summaries if row["verdict"] == "연구 후보"]
 
     lines = [
-        f"- 단순 합산 PnL 1위는 `{raw_best['strategy']}`이지만 Max DD가 `{fmt(raw_best['max_drawdown_pct'])}%`라서 바로 demo/live 후보로 보지 않는다.",
+        f"- 단순 합산 PnL 1위는 `{raw_best['strategy']}`이지만 Max DD `{fmt(raw_best['max_drawdown_pct'])}%`, MC p95 DD `{fmt(raw_best.get('max_p95_max_drawdown_pct', 0.0))}%`라서 바로 demo/live 후보로 보지 않는다.",
+        "- 추천 기준은 총 PnL이 아니라 walk-forward/Monte Carlo 생존성, 비용 반영, 충분한 거래수 순서다.",
     ]
     if paper_candidates:
         names = ", ".join(f"`{row['strategy']}`" for row in paper_candidates)
@@ -380,7 +499,8 @@ def markdown_report(payload: dict[str, Any]) -> str:
         "- 이 표는 연구용 백테스트 결과이며 수익 보장이나 실거래 권고가 아니다.",
         "- `chronos_regime_hybrid`는 현재 프로젝트 기본값에 맞춰 `chronos_enabled=false` fallback 경로로 비교했다.",
         "- `ma_7d_5m`은 원래 5분봉 전용 전략이지만, 전체 전략 공통 비교를 위해 같은 시간봉에서도 실행했다.",
-        "- `데이터부족/오류`는 해당 전략의 lookback보다 candle 수가 부족하거나 실행 중 오류가 발생한 경우다.",
+        "- `partial_strategy_error`는 전략 내부 예외가 발생해 해당 run을 성공으로 보지 않는다는 뜻이다.",
+        "- `ruin_probability > 1%` 또는 `p95_max_drawdown > 40%`이면 자동으로 `실거래 금지` 판정한다.",
         "",
         "## 핵심 결론",
         "",
@@ -388,13 +508,14 @@ def markdown_report(payload: dict[str, Any]) -> str:
         "",
         "## 전략별 종합 순위",
         "",
-        "| 순위 | 전략 | 판정 | 실행 | 양수 실행 | 합산 PnL | 평균 PnL | 중앙 PnL | 평균 PF | 평균 Sharpe | 평균 승률 | Max DD | 거래수 | 최고 Run | 최악 Run |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| 순위 | 생존성 순위 | 전략 | 판정 | 실행 | 양수 실행 | 합산 PnL | 평균 PnL | 중앙 PnL | 평균 PF | 평균 Sharpe | 평균 승률 | Max DD | MC p95 DD | Ruin | MC p5 잔고 | 거래수 | 최고 Run | 최악 Run |",
+        "| ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for idx, row in enumerate(summaries, start=1):
         lines.append(
-            "| {idx} | `{strategy}` | {verdict} | {ok}/{runs} | {positive} | {total} | {avg} | {median} | {pf} | {sharpe} | {win}% | {dd}% | {trades} | {best} | {worst} |".format(
+            "| {idx} | {survival_rank} | `{strategy}` | {verdict} | {ok}/{runs} | {positive} | {total} | {avg} | {median} | {pf} | {sharpe} | {win}% | {dd}% | {mc_dd}% | {ruin}% | {p5} | {trades} | {best} | {worst} |".format(
                 idx=idx,
+                survival_rank=row["survival_rank"],
                 strategy=row["strategy"],
                 verdict=row["verdict"],
                 ok=row["ok_runs"],
@@ -407,6 +528,9 @@ def markdown_report(payload: dict[str, Any]) -> str:
                 sharpe=fmt(row["avg_sharpe"]),
                 win=fmt(row["avg_win_rate_pct"], 1),
                 dd=fmt(row["max_drawdown_pct"], 2),
+                mc_dd=fmt(row.get("max_p95_max_drawdown_pct", 0.0), 2),
+                ruin=fmt(row.get("max_ruin_probability", 0.0) * 100.0, 2),
+                p5=fmt(row.get("worst_p5_final_balance", 0.0)),
                 trades=row["total_trades"],
                 best=best_worst_label(row["best_run"]),
                 worst=best_worst_label(row["worst_run"]),
@@ -417,28 +541,32 @@ def markdown_report(payload: dict[str, Any]) -> str:
         "",
         "## Run 상세",
         "",
-        "| 전략 | 종목 | TF | 상태 | Candles | PnL | Return | 승률 | Max DD | PF | Sharpe | 거래수 | 주요 청산 | 비고 |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| 전략 | 종목 | TF | 상태 | Candles | PnL | Return | 승률 | Max DD | MC p95 DD | Ruin | MC p5 잔고 | PF | Sharpe | 거래수 | 주요 청산 | 비고 |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for row in sorted(results, key=lambda item: (item["strategy"], item["pair"], item["timeframe"])):
         if row["status"] != "ok":
             lines.append(
-                f"| `{row['strategy']}` | {row['pair']} | {row['timeframe']} | {row['status']} | {row['candles']} | - | - | - | - | - | - | - | - | {row.get('error', '')} |"
+                f"| `{row['strategy']}` | {row['pair']} | {row['timeframe']} | {row['status']} | {row['candles']} | - | - | - | - | - | - | - | - | - | - | - | {row.get('error', '')} |"
             )
             continue
         note = ""
         if row.get("strategy_errors"):
             note = f"strategy_errors={row['strategy_errors']}"
         lines.append(
-            "| `{strategy}` | {pair} | {tf} | ok | {candles} | {pnl} | {ret}% | {win}% | {dd}% | {pf} | {sharpe} | {trades} | {exits} | {note} |".format(
+            "| `{strategy}` | {pair} | {tf} | {status} | {candles} | {pnl} | {ret}% | {win}% | {dd}% | {mc_dd}% | {ruin}% | {p5} | {pf} | {sharpe} | {trades} | {exits} | {note} |".format(
                 strategy=row["strategy"],
                 pair=row["pair"],
                 tf=row["timeframe"],
+                status=row["status"],
                 candles=row["candles"],
                 pnl=fmt(row["total_pnl"]),
                 ret=fmt(row["return_pct"]),
                 win=fmt(row["win_rate"] * 100.0, 1),
                 dd=fmt(row["max_drawdown"] * 100.0, 2),
+                mc_dd=fmt(row.get("p95_max_drawdown", 0.0) * 100.0, 2),
+                ruin=fmt(row.get("ruin_probability", 0.0) * 100.0, 2),
+                p5=fmt(row.get("p5_final_balance", 0.0)),
                 pf=fmt(row["profit_factor"]),
                 sharpe=fmt(row["sharpe_ratio"]),
                 trades=row["trade_count"],
@@ -481,14 +609,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "liquidity_impact_factor": args.liquidity_impact_factor,
         "maintenance_margin_ratio": args.maintenance_margin_ratio,
         "liquidation_fee_pct": args.liquidation_fee_pct,
+        "monte_carlo_simulations": args.monte_carlo_simulations,
+        "survival_position_size_pct": args.survival_position_size_pct,
     }
 
-    client = OKXClient(
-        api_key=settings.OKX_API_KEY,
-        secret=settings.OKX_SECRET,
-        passphrase=settings.OKX_PASSPHRASE,
-        mode=settings.OKX_MODE,
-    )
+    client = OKXPublicMarketData()
     results: list[dict[str, Any]] = []
     try:
         datasets: dict[tuple[str, str], list[CandleView]] = {}
@@ -563,6 +688,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--liquidity-impact-factor", type=float, default=0.1)
     parser.add_argument("--maintenance-margin-ratio", type=float, default=0.005)
     parser.add_argument("--liquidation-fee-pct", type=float, default=0.002)
+    parser.add_argument("--monte-carlo-simulations", type=int, default=1000)
+    parser.add_argument("--survival-position-size-pct", type=float, default=10.0)
     parser.add_argument("--json-out", default=None)
     parser.add_argument("--md-out", default=None)
     parser.add_argument("--verbose", action="store_true")
