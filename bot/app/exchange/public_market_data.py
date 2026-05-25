@@ -103,6 +103,7 @@ class OKXPublicMarketData:
             "spread_pct": _spread_pct(bid, ask),
             "timestamp": _to_int(row.get("ts")),
             "timestamp_iso": _timestamp_iso(row.get("ts")),
+            "raw": dict(row),
         }
 
     async def get_order_book_top_depth(self, pair: str, depth: int = 5) -> dict[str, Any]:
@@ -136,7 +137,101 @@ class OKXPublicMarketData:
             "timestamp_iso": _timestamp_iso(row.get("ts")),
             "bids": bids,
             "asks": asks,
+            "raw": {
+                "ts": row.get("ts"),
+                "seqId": row.get("seqId"),
+                "bids": row.get("bids", [])[: max(1, depth)],
+                "asks": row.get("asks", [])[: max(1, depth)],
+            },
         }
+
+    async def get_recent_trades(self, pair: str, limit: int = 100) -> list[dict[str, Any]]:
+        result = await self._request(
+            "/api/v5/market/trades",
+            params={"instId": pair, "limit": str(_bounded_limit(limit, maximum=500))},
+        )
+        return [_normalize_trade(row, pair) for row in result.get("data", [])]
+
+    async def get_trade_history(
+        self,
+        pair: str,
+        *,
+        limit: int = 100,
+        pagination_type: str = "1",
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "instId": pair,
+            "limit": str(_bounded_limit(limit, maximum=100)),
+            "type": pagination_type,
+        }
+        if after is not None:
+            params["after"] = after
+        if before is not None:
+            params["before"] = before
+
+        result = await self._request("/api/v5/market/history-trades", params=params)
+        return [_normalize_trade(row, pair) for row in result.get("data", [])]
+
+    async def get_funding_rate(self, pair: str) -> dict[str, Any]:
+        result = await self._request("/api/v5/public/funding-rate", params={"instId": pair})
+        rows = result.get("data", [])
+        if not rows:
+            raise RuntimeError(f"OKX funding rate is empty for {pair}")
+        return _normalize_funding_rate(rows[0], pair)
+
+    async def get_funding_rate_history(
+        self,
+        pair: str,
+        *,
+        limit: int = 100,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "instId": pair,
+            "limit": str(_bounded_limit(limit, maximum=100)),
+        }
+        if after is not None:
+            params["after"] = after
+        if before is not None:
+            params["before"] = before
+
+        result = await self._request("/api/v5/public/funding-rate-history", params=params)
+        return [_normalize_funding_rate(row, pair) for row in result.get("data", [])]
+
+    async def get_open_interest(self, pair: str, *, inst_type: str = "SWAP") -> dict[str, Any]:
+        result = await self._request(
+            "/api/v5/public/open-interest",
+            params={"instType": inst_type, "instId": pair},
+        )
+        rows = result.get("data", [])
+        if not rows:
+            raise RuntimeError(f"OKX open interest is empty for {pair}")
+        return _normalize_open_interest(rows[0], pair)
+
+    async def get_open_interest_history(
+        self,
+        pair: str,
+        *,
+        period: str = "5m",
+        limit: int = 100,
+        begin: str | None = None,
+        end: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "instId": pair,
+            "period": period,
+            "limit": str(_bounded_limit(limit, maximum=100)),
+        }
+        if begin is not None:
+            params["begin"] = begin
+        if end is not None:
+            params["end"] = end
+
+        result = await self._request("/api/v5/rubik/stat/contracts/open-interest-history", params=params)
+        return [_normalize_open_interest_history_row(row, pair) for row in result.get("data", [])]
 
     @staticmethod
     def _normalize_candle(row: list[str]) -> dict[str, Any]:
@@ -156,6 +251,77 @@ def _normalize_book_level(level: list[str]) -> dict[str, float]:
         "price": float(level[0]),
         "size": float(level[1]),
     }
+
+
+def _normalize_trade(row: Mapping[str, Any], pair: str) -> dict[str, Any]:
+    price = _to_float(row.get("px"))
+    size = _to_float(row.get("sz"))
+    return {
+        "instId": row.get("instId", pair),
+        "trade_id": str(row.get("tradeId", "")),
+        "side": str(row.get("side", "")).lower(),
+        "price": price,
+        "size": size,
+        "notional": price * size,
+        "source": row.get("source"),
+        "timestamp": _to_int(row.get("ts")),
+        "timestamp_iso": _timestamp_iso(row.get("ts")),
+        "raw": dict(row),
+    }
+
+
+def _normalize_funding_rate(row: Mapping[str, Any], pair: str) -> dict[str, Any]:
+    funding_time = row.get("fundingTime")
+    return {
+        "instId": row.get("instId", pair),
+        "instType": row.get("instType"),
+        "funding_rate": _to_float(row.get("fundingRate")),
+        "realized_rate": _to_float(row.get("realizedRate")),
+        "sett_funding_rate": _to_float(row.get("settFundingRate")),
+        "interest_rate": _to_float(row.get("interestRate")),
+        "premium": _to_float(row.get("premium")),
+        "funding_time": _to_int(funding_time),
+        "funding_time_iso": _timestamp_iso(funding_time),
+        "next_funding_time": _to_int(row.get("nextFundingTime")),
+        "next_funding_time_iso": _timestamp_iso(row.get("nextFundingTime")),
+        "prev_funding_time": _to_int(row.get("prevFundingTime")),
+        "prev_funding_time_iso": _timestamp_iso(row.get("prevFundingTime")),
+        "timestamp": _to_int(row.get("ts")),
+        "timestamp_iso": _timestamp_iso(row.get("ts")),
+        "method": row.get("method"),
+        "sett_state": row.get("settState"),
+        "formula_type": row.get("formulaType"),
+        "raw": dict(row),
+    }
+
+
+def _normalize_open_interest(row: Mapping[str, Any], pair: str) -> dict[str, Any]:
+    return {
+        "instId": row.get("instId", pair),
+        "instType": row.get("instType"),
+        "open_interest": _to_float(row.get("oi")),
+        "open_interest_ccy": _to_float(row.get("oiCcy")),
+        "open_interest_usd": _to_float(row.get("oiUsd")),
+        "timestamp": _to_int(row.get("ts")),
+        "timestamp_iso": _timestamp_iso(row.get("ts")),
+        "raw": dict(row),
+    }
+
+
+def _normalize_open_interest_history_row(row: list[Any], pair: str) -> dict[str, Any]:
+    return {
+        "instId": pair,
+        "timestamp": _to_int(row[0] if len(row) > 0 else None),
+        "timestamp_iso": _timestamp_iso(row[0] if len(row) > 0 else None),
+        "open_interest": _to_float(row[1] if len(row) > 1 else None),
+        "open_interest_ccy": _to_float(row[2] if len(row) > 2 else None),
+        "open_interest_usd": _to_float(row[3] if len(row) > 3 else None),
+        "raw": list(row),
+    }
+
+
+def _bounded_limit(limit: int, *, maximum: int) -> int:
+    return max(1, min(int(limit), maximum))
 
 
 def _to_float(value: Any) -> float:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
@@ -17,9 +16,6 @@ setup_logging()
 logger = get_logger(__name__)
 
 _VERSION = "1.0.0"
-_STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
-
-
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -34,7 +30,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "bot_starting",
         version=_VERSION,
         mode=settings.OKX_MODE,
-        strategies_dir=str(_STRATEGIES_DIR),
     )
 
     # 1. OKX REST client
@@ -59,30 +54,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("runtime_event_persistence_unavailable", error=str(exc))
 
-    # 2. Strategy registry + auto-discover
-    from app.core.strategy_registry import auto_discover, registry
-
-    if _STRATEGIES_DIR.is_dir():
-        try:
-            auto_discover(_STRATEGIES_DIR)
-            logger.info(
-                "strategies_discovered",
-                count=len(registry.list_all()),
-                names=registry.list_all(),
-            )
-        except Exception as exc:
-            logger.warning("strategy_discovery_failed", error=str(exc))
-    else:
-        logger.warning("strategies_dir_missing", path=str(_STRATEGIES_DIR))
-
-    app.state.strategy_registry = registry
-
-    # 3. Optional core components — imported lazily so the API still starts
-    #    even when the parallel modules are not yet committed.
-    live_engine = None
-    circuit_breaker = None
+    # 2. Optional integrations.
     telegram_notifier = None
-    telegram_command_poller = None
 
     try:
         from app.core.telegram_notifier import TelegramNotifier
@@ -98,68 +71,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("telegram_notifier_unavailable")
         app.state.telegram_notifier = None
 
-    try:
-        from app.core.circuit_breaker import CircuitBreaker
-        from app.db.database import AsyncSessionLocal
-
-        circuit_breaker = CircuitBreaker(
-            session_factory=AsyncSessionLocal,
-            max_daily_loss=settings.MAX_DAILY_LOSS_USD,
-            max_monthly_loss=settings.MAX_MONTHLY_LOSS_USD,
-            starting_equity=settings.RISK_STARTING_EQUITY_USD,
-            max_total_drawdown_pct=settings.MAX_TOTAL_DRAWDOWN_PCT,
-            fail_closed_on_error=settings.RISK_FAIL_CLOSED,
-        )
-        app.state.circuit_breaker = circuit_breaker
-        logger.info(
-            "circuit_breaker_initialised",
-            max_daily_loss=settings.MAX_DAILY_LOSS_USD,
-            max_monthly_loss=settings.MAX_MONTHLY_LOSS_USD,
-            starting_equity=settings.RISK_STARTING_EQUITY_USD,
-            max_total_drawdown_pct=settings.MAX_TOTAL_DRAWDOWN_PCT,
-            fail_closed_on_error=settings.RISK_FAIL_CLOSED,
-        )
-    except ImportError:
-        logger.warning("circuit_breaker_unavailable")
-        app.state.circuit_breaker = None
-
-    try:
-        from app.core.live_engine import LiveEngine
-
-        live_engine = LiveEngine(
-            okx_client=okx_client,
-            strategy_registry=registry,
-            circuit_breaker=circuit_breaker,
-            telegram_notifier=telegram_notifier,
-        )
-        app.state.live_engine = live_engine
-        logger.info("live_engine_initialised")
-    except ImportError:
-        logger.warning("live_engine_unavailable")
-        app.state.live_engine = None
-
-    # Telegram command poller (optional)
-    try:
-        from app.core.telegram_command_poller import TelegramCommandPoller
-        from app.db.database import AsyncSessionLocal
-
-        telegram_command_poller = TelegramCommandPoller(
-            notifier=telegram_notifier,
-            session_factory=AsyncSessionLocal,
-            app_state=app.state,
-            poll_timeout_sec=settings.TELEGRAM_POLL_TIMEOUT_SEC,
-            enabled=settings.TELEGRAM_COMMANDS_ENABLED,
-        )
-        app.state.telegram_command_poller = telegram_command_poller
-        await telegram_command_poller.start()
-        logger.info(
-            "telegram_command_poller_initialised",
-            enabled=telegram_command_poller.enabled,
-        )
-    except ImportError:
-        logger.warning("telegram_command_poller_unavailable")
-        app.state.telegram_command_poller = None
-
     logger.info("bot_started", version=_VERSION, mode=settings.OKX_MODE)
 
     # ------------------------------------------------------------------ #
@@ -171,22 +82,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     # ------------------------------------------------------------------ #
     logger.info("bot_shutting_down")
-
-    if live_engine is not None:
-        try:
-            is_running = getattr(live_engine, "is_running", False)
-            if is_running:
-                await live_engine.stop()
-                logger.info("live_engine_stopped")
-        except Exception as exc:
-            logger.error("live_engine_stop_error", error=str(exc))
-
-    if telegram_command_poller is not None:
-        try:
-            await telegram_command_poller.stop()
-            logger.info("telegram_command_poller_stopped")
-        except Exception as exc:
-            logger.error("telegram_command_poller_stop_error", error=str(exc))
 
     try:
         from app.core.runtime_events import shutdown_persistence
@@ -220,7 +115,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OKX Trading Bot",
         version=_VERSION,
-        description="Async crypto futures trading bot with backtesting support.",
+        description="Async crypto futures trading bot for Funding/OI demo execution.",
         lifespan=lifespan,
     )
 
@@ -234,27 +129,13 @@ def create_app() -> FastAPI:
     )
 
     # Routers
-    from app.api.routes_backtest import router as backtest_router
-    from app.api.routes_compare import router as compare_router
-    from app.api.routes_config import router as config_router
     from app.api.routes_markets import router as markets_router
-    from app.api.routes_analysis_skill import router as analysis_skill_router
-    from app.api.routes_optimizer import router as optimizer_router
     from app.api.routes_trades import router as trades_router
     from app.api.routes_trading import router as trading_router
-    from app.api.routes_selector import router as selector_router
-    from app.api.routes_validate import router as validate_router
 
-    app.include_router(backtest_router)
     app.include_router(trading_router)
     app.include_router(trades_router)
-    app.include_router(config_router)
     app.include_router(markets_router)
-    app.include_router(optimizer_router)
-    app.include_router(compare_router)
-    app.include_router(analysis_skill_router)
-    app.include_router(selector_router)
-    app.include_router(validate_router)
 
     # Root endpoint
     @app.get("/", tags=["meta"], summary="Bot identity")

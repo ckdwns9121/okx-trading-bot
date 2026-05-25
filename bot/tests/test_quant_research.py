@@ -1,5 +1,3 @@
-from datetime import datetime, timedelta
-
 import numpy as np
 import pytest
 
@@ -13,8 +11,6 @@ from app.core.quant_research import (
     volatility_profile_matches,
     zscore_signal,
 )
-from app.core.strategy_base import Signal, TradingContext
-from strategies.rsi_bollinger_combo import RSIBollingerComboStrategy
 
 
 def metrics(
@@ -39,16 +35,16 @@ def test_walk_forward_summary_aggregates_complete_fixed_windows():
         {
             "train_window": {"start": "2026-01-01T00:00:00", "end": "2026-01-10T00:00:00"},
             "evaluation_window": {"start": "2026-01-10T00:00:00", "end": "2026-01-15T00:00:00"},
-            "train_params": {"rsi_period": 14, "bb_period": 20},
-            "evaluation_params": {"rsi_period": 14, "bb_period": 20},
+            "train_params": {"param_a": 14, "param_b": 20},
+            "evaluation_params": {"param_a": 14, "param_b": 20},
             "train_metrics": metrics(total_pnl=8.0, sharpe_ratio=1.0, max_drawdown=0.12, win_rate=0.51, trade_count=10),
             "evaluation_metrics": metrics(total_pnl=4.0, sharpe_ratio=0.7, max_drawdown=0.10, win_rate=0.55, trade_count=6),
         },
         {
             "train_window": {"start": "2026-01-15T00:00:00", "end": "2026-01-25T00:00:00"},
             "evaluation_window": {"start": "2026-01-25T00:00:00", "end": "2026-01-30T00:00:00"},
-            "train_params": {"rsi_period": 12, "bb_period": 18},
-            "evaluation_params": {"rsi_period": 12, "bb_period": 18},
+            "train_params": {"param_a": 12, "param_b": 18},
+            "evaluation_params": {"param_a": 12, "param_b": 18},
             "train_metrics": metrics(total_pnl=5.0, sharpe_ratio=0.8, max_drawdown=0.15, win_rate=0.48, trade_count=8),
             "evaluation_metrics": metrics(total_pnl=2.0, sharpe_ratio=0.5, max_drawdown=0.20, win_rate=0.45, trade_count=4),
         },
@@ -71,7 +67,7 @@ def test_walk_forward_summary_fails_closed_on_incomplete_data():
         {
             "train_window": {"start": "2026-01-01T00:00:00", "end": "2026-01-10T00:00:00"},
             "evaluation_window": {"start": "2026-01-10T00:00:00", "end": "2026-01-15T00:00:00"},
-            "train_params": {"rsi_period": 14},
+            "train_params": {"param_a": 14},
             "train_metrics": metrics(total_pnl=8.0, sharpe_ratio=1.0, max_drawdown=0.12, win_rate=0.51, trade_count=10),
             "evaluation_metrics": {"total_pnl": 4.0},
         }
@@ -89,8 +85,8 @@ def test_walk_forward_summary_rejects_evaluation_window_retuning():
         {
             "train_window": {"start": "2026-01-01T00:00:00", "end": "2026-01-10T00:00:00"},
             "evaluation_window": {"start": "2026-01-10T00:00:00", "end": "2026-01-15T00:00:00"},
-            "train_params": {"rsi_period": 14},
-            "evaluation_params": {"rsi_period": 10},
+            "train_params": {"param_a": 14},
+            "evaluation_params": {"param_a": 10},
             "train_metrics": metrics(total_pnl=8.0, sharpe_ratio=1.0, max_drawdown=0.12, win_rate=0.51, trade_count=10),
             "evaluation_metrics": metrics(total_pnl=4.0, sharpe_ratio=0.7, max_drawdown=0.10, win_rate=0.55, trade_count=6),
         }
@@ -163,93 +159,3 @@ def test_stat_arb_baseline_helpers_cover_ratio_correlation_zscore_and_half_life(
     half_life = estimate_half_life(mean_reverting)
     assert half_life is not None
     assert half_life > 0.0
-
-
-def candle(index: int, close: float = 100.0) -> dict:
-    return {
-        "timestamp": datetime(2026, 1, 1) + timedelta(minutes=index),
-        "open": close,
-        "high": close + 1.0,
-        "low": close - 1.0,
-        "close": close,
-        "volume": 1000.0,
-    }
-
-
-def context() -> TradingContext:
-    return TradingContext(
-        current_position=None,
-        account_balance=10_000.0,
-        leverage=2,
-        pair="BTC-USDT-SWAP",
-    )
-
-
-def force_long_setup(strategy: RSIBollingerComboStrategy, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(strategy, "_compute_rsi", lambda closes: 20.0)
-    monkeypatch.setattr(strategy, "_compute_bollinger_bands", lambda closes: (110.0, 100.0, 95.0))
-
-
-@pytest.mark.asyncio
-async def test_default_combo_behavior_is_unchanged_when_volatility_filter_is_disabled(monkeypatch):
-    strategy = RSIBollingerComboStrategy()
-    strategy.configure({})
-    force_long_setup(strategy, monkeypatch)
-    monkeypatch.setattr(
-        strategy,
-        "_compute_volatility_regime",
-        lambda highs, lows, closes, bb_upper, bb_middle, bb_lower: classify_volatility_regime(
-            bb_width_pct=1.0,
-            atr_pct=0.5,
-        ),
-    )
-
-    history = [candle(i, 100.0) for i in range(strategy.lookback_period)]
-    signal = await strategy.on_candle(candle(strategy.lookback_period, 90.0), history, context())
-
-    assert signal.signal == Signal.LONG
-    assert "rsi_oversold+below_lower_band" in signal.reason
-
-
-@pytest.mark.asyncio
-async def test_opt_in_normal_volatility_profile_blocks_low_volatility_entries(monkeypatch):
-    strategy = RSIBollingerComboStrategy()
-    strategy.configure({"volatility_filter_enabled": True, "volatility_profile": "normal"})
-    force_long_setup(strategy, monkeypatch)
-    monkeypatch.setattr(
-        strategy,
-        "_compute_volatility_regime",
-        lambda highs, lows, closes, bb_upper, bb_middle, bb_lower: classify_volatility_regime(
-            bb_width_pct=1.0,
-            atr_pct=0.5,
-        ),
-    )
-
-    history = [candle(i, 100.0) for i in range(strategy.lookback_period)]
-    signal = await strategy.on_candle(candle(strategy.lookback_period, 90.0), history, context())
-
-    assert signal.signal == Signal.HOLD
-    assert "blocked_by_volatility_profile" in signal.reason
-    assert "regime=low" in signal.reason
-
-
-@pytest.mark.asyncio
-async def test_opt_in_normal_volatility_profile_blocks_high_volatility_entries(monkeypatch):
-    strategy = RSIBollingerComboStrategy()
-    strategy.configure({"volatility_filter_enabled": True, "volatility_profile": "normal"})
-    force_long_setup(strategy, monkeypatch)
-    monkeypatch.setattr(
-        strategy,
-        "_compute_volatility_regime",
-        lambda highs, lows, closes, bb_upper, bb_middle, bb_lower: classify_volatility_regime(
-            bb_width_pct=9.0,
-            atr_pct=3.5,
-        ),
-    )
-
-    history = [candle(i, 100.0) for i in range(strategy.lookback_period)]
-    signal = await strategy.on_candle(candle(strategy.lookback_period, 90.0), history, context())
-
-    assert signal.signal == Signal.HOLD
-    assert "blocked_by_volatility_profile" in signal.reason
-    assert "regime=high" in signal.reason

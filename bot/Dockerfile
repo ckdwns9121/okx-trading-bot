@@ -6,7 +6,7 @@ ARG INSTALL_ML_EXTRAS=false
 
 COPY pyproject.toml ./
 COPY app/ ./app/
-COPY strategies/ ./strategies/
+COPY scripts/ ./scripts/
 
 RUN if [ "$INSTALL_ML_EXTRAS" = "true" ]; then \
       pip install --no-cache-dir ".[ml]"; \

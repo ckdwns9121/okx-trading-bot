@@ -2,14 +2,11 @@ services:
   bot:
     build:
       context: ./bot
-      args:
-        INSTALL_ML_EXTRAS: "true"
     env_file:
       - .env
     volumes:
       - ./bot/app:/app/app
       - ./bot/alembic:/app/alembic
-      - ./bot/strategies:/app/strategies
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       - PYTHONDONTWRITEBYTECODE=1

@@ -1,8 +1,10 @@
+export type TradeSource = "live" | "paper";
+
 export interface Trade {
   id: number;
   strategy_name: string;
   pair: string;
-  direction: "long" | "short";
+  direction: "long" | "short" | string;
   entry_price: number;
   exit_price: number | null;
   quantity: number;
@@ -12,19 +14,19 @@ export interface Trade {
   fee: number;
   entry_time: string;
   exit_time: string | null;
-  status: "open" | "closed" | "cancelled";
-  source: "live" | "backtest" | "paper";
+  status: "open" | "closed" | "cancelled" | string;
+  source: TradeSource | string;
 }
 
 export interface Order {
-  id: number;
+  id: string;
   pair: string;
-  side: "buy" | "sell";
-  order_type: "market" | "limit" | "stop" | "stop_limit";
+  side: "buy" | "sell" | string;
+  order_type: "market" | "limit" | "stop" | "stop_limit" | string;
   price: number | null;
   quantity: number;
   leverage: number;
-  status: "pending" | "filled" | "partial" | "cancelled" | "rejected";
+  status: "pending" | "filled" | "partial" | "cancelled" | "rejected" | string;
   exchange_order_id: string | null;
   cl_ord_id: string | null;
   error_message: string | null;
@@ -35,80 +37,13 @@ export interface Order {
 export interface Position {
   id: number;
   pair: string;
-  direction: "long" | "short";
+  direction: "long" | "short" | string;
   entry_price: number;
   quantity: number;
   leverage: number;
   unrealized_pnl: number;
+  exchange_position_id?: string | null;
   opened_at: string;
-}
-
-export interface BacktestRun {
-  id: string;
-  strategy_name: string;
-  pair: string;
-  timeframe: string;
-  start_date: string;
-  end_date: string;
-  initial_balance: number;
-  leverage: number;
-  fee_rate: number;
-  slippage_pct: number;
-  total_pnl: number;
-  win_rate: number;
-  max_drawdown: number;
-  sharpe_ratio: number | null;
-  trade_count: number;
-  created_at: string;
-}
-
-export interface TradeAnalytics {
-  profit_factor: number | null;
-  avg_win: number;
-  avg_loss: number;
-  max_consecutive_wins: number;
-  max_consecutive_losses: number;
-  avg_hold_time_minutes: number;
-  best_trade_pnl: number;
-  worst_trade_pnl: number;
-  expectancy: number;
-  payoff_ratio: number | null;
-  total_trades: number;
-  winning_trades: number;
-  losing_trades: number;
-}
-
-export interface MonteCarloResult {
-  median_final_balance: number;
-  p5_final_balance: number;
-  p95_final_balance: number;
-  median_max_drawdown: number;
-  p95_max_drawdown: number;
-  ruin_probability: number;
-  n_simulations: number;
-}
-
-export interface EquityCurvePoint {
-  index: number;
-  balance: number;
-  drawdown: number;
-}
-
-export interface SensitivityResult {
-  fee_rate: number;
-  slippage_pct: number;
-  total_pnl: number;
-  sharpe_ratio: number;
-  win_rate: number;
-  trade_count: number;
-  final_balance: number;
-}
-
-export interface BacktestRunWithTrades extends BacktestRun {
-  trades: Trade[];
-  equity_curve: EquityCurvePoint[];
-  buy_hold_pnl: number | null;
-  buy_hold_return_pct: number | null;
 }
 
 export interface PnlSummary {
@@ -125,17 +60,6 @@ export interface AccountBalance {
   updated_at_ms?: string | null;
 }
 
-export interface PairStatus {
-  pair: string;
-  strategy_name: string;
-  timeframe?: string | null;
-  status: "running" | "stopped" | "error" | "idle" | "unknown";
-  leverage?: number;
-  retry_count?: number;
-  last_signal?: string | null;
-  error?: string | null;
-}
-
 export interface TradingLogEvent {
   id: number;
   timestamp: string;
@@ -148,41 +72,107 @@ export interface TradingLogEvent {
   details?: Record<string, unknown>;
 }
 
+export interface FundingOiDemoStatus {
+  running: boolean;
+  stale: boolean;
+  status: "running" | "stale" | "stopped" | "not_started" | string;
+  strategy_name: string;
+  mode?: "live" | "demo" | string | null;
+  dry_run?: boolean | null;
+  started_at?: string | null;
+  last_loop_at?: string | null;
+  latest_event_at?: string | null;
+  snapshot_count_seen?: number | null;
+  open_position?: Record<string, unknown> | null;
+  closed_trade_count: number;
+  processed_event_count: number;
+  order_error_count: number;
+  close_error_count: number;
+  reconciliation_count: number;
+  reconciliation_error_count: number;
+  watched_instrument_count: number;
+  watched_instruments: string[];
+  config: Record<string, unknown>;
+  message?: string | null;
+}
+
 export interface HealthStatus {
-  db: "ok" | "error";
+  db: "ok" | "error" | string;
   okx_api: {
-    status: "ok" | "error";
-    mode: "live" | "demo";
+    status: "ok" | "error" | string;
+    mode: "live" | "demo" | string;
   };
-  okx_ws: "connected" | "disconnected" | "error";
   trading_tasks: {
     active: number;
     failed: number;
     stopped: number;
   };
-  circuit_breaker: "open" | "closed" | "half_open";
+  circuit_breaker: "removed" | string;
 }
 
-export interface StrategyConfig {
-  id?: number;
-  strategy_name: string;
-  pair: string;
-  timeframe: string;
-  leverage: number;
-  enabled: boolean;
-  params: Record<string, unknown>;
+export interface MarketDislocationRow {
+  inst_id: string;
+  observed_at: string;
+  age_seconds: number;
+  price: number;
+  lookback_return_pct: number | null;
+  funding_rate: number | null;
+  oi_change_pct: number | null;
+  spread_pct: number;
+  book_imbalance: number;
+  trade_imbalance: number;
+  price_flush_score: number;
+  funding_heat_score: number;
+  oi_buildup_score: number;
+  spread_quality_score: number;
+  flow_imbalance_score: number;
+  book_imbalance_score: number;
+  dislocation_score: number;
+  candidate_side: string;
+  readiness: "ready" | "watch" | "cold" | string;
+  signal_ready: boolean;
+  reason: string;
 }
 
-export interface BacktestParams {
+export interface MarketDislocationResponse {
   strategy_name: string;
-  pair: string;
-  timeframe: string;
-  start_date: string;
-  end_date: string;
-  initial_balance?: number;
-  leverage?: number;
-  fee_rate?: number;
-  slippage_pct?: number;
+  generated_at: string;
+  lookback_seconds: number;
+  fresh_seconds: number;
+  item_count: number;
+  ready_count: number;
+  items: MarketDislocationRow[];
+}
+
+export interface BasisArbitrageRow {
+  inst_id: string;
+  spot_inst_id: string;
+  observed_at: string;
+  age_seconds: number;
+  perp_mid_price: number;
+  spot_mid_price: number;
+  basis_pct: number;
+  funding_rate: number | null;
+  funding_8h_pct: number | null;
+  estimated_daily_funding_pct: number | null;
+  perp_spread_pct: number;
+  spot_spread_pct: number;
+  estimated_round_trip_cost_pct: number;
+  net_funding_8h_after_cost_pct: number | null;
+  candidate_side: string;
+  carry_score: number;
+  readiness: "ready" | "watch" | "cold" | string;
+  signal_ready: boolean;
+  reason: string;
+}
+
+export interface BasisArbitrageResponse {
+  strategy_name: string;
+  generated_at: string;
+  fresh_seconds: number;
+  item_count: number;
+  ready_count: number;
+  items: BasisArbitrageRow[];
 }
 
 export interface MarketTicker {
@@ -197,114 +187,4 @@ export interface MarketTicker {
   low_24h: number;
   icon_url: string;
   sector: string;
-}
-
-export interface TrialResult {
-  trial_number: number;
-  params: Record<string, number>;
-  train_sharpe: number;
-  train_pnl: number;
-  train_win_rate: number;
-  val_sharpe: number;
-  val_pnl: number;
-  val_win_rate: number;
-  score: number;
-}
-
-export interface OptimizationResult {
-  strategy_name: string;
-  pair: string;
-  best_params: Record<string, number>;
-  best_score: number;
-  total_trials: number;
-  trials: TrialResult[];
-  train_period: string;
-  val_period: string;
-}
-
-export interface ParamSpace {
-  [param: string]: [number, number];
-}
-
-export interface CompareResult {
-  strategy: string;
-  pair: string;
-  total_pnl: number;
-  win_rate: number;
-  max_drawdown: number;
-  sharpe_ratio: number;
-  trade_count: number;
-  profit_factor: number;
-}
-
-export interface StrategyInfo {
-  name: string;
-  description: string;
-}
-
-export interface RegimeResult {
-  regime: string;
-  confidence: number;
-  adx: number;
-  volatility: number;
-  trend_direction: number;
-  details: Record<string, number>;
-}
-
-export interface StrategyScore {
-  strategy_name: string;
-  sharpe_ratio: number;
-  total_pnl: number;
-  win_rate: number;
-  regime_fit: number;
-  composite_score: number;
-}
-
-// ── Validation ──────────────────────────────────────────────────────────────
-
-export interface StrategyRanking {
-  rank: number;
-  strategy_name: string;
-  pair: string;
-  timeframe: string;
-  sharpe_ratio: number;
-  max_drawdown: number;
-  win_rate: number;
-  total_pnl: number;
-  trade_count: number;
-  composite_score: number;
-}
-
-export interface OptimizedStrategy {
-  strategy_name: string;
-  original_params: Record<string, number>;
-  optimized_params: Record<string, number>;
-  before_score: number;
-  after_score: number;
-}
-
-export interface ValidationProgress {
-  run_id: string;
-  phase: "idle" | "collecting" | "backtesting" | "ranking" | "optimizing" | "complete" | "error" | "cancelled";
-  pct: number;
-  message: string;
-  started_at: string | null;
-}
-
-export interface ValidationResult {
-  run_id: string;
-  rankings: StrategyRanking[];
-  optimized: OptimizedStrategy[];
-  completed_at: string;
-  total_backtests: number;
-  duration_seconds: number;
-}
-
-export interface SelectionResult {
-  pair: string;
-  regime: RegimeResult;
-  recommended_strategy: string;
-  recommended_params: Record<string, number>;
-  scores: StrategyScore[];
-  reasoning: string;
 }

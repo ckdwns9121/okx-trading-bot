@@ -2,22 +2,12 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 import OverviewPage from "@/pages/OverviewPage";
 import MarketsPage from "@/pages/MarketsPage";
-import BacktestPage from "@/pages/BacktestPage";
-import OptimizePage from "@/pages/OptimizePage";
-import ComparePage from "@/pages/ComparePage";
-import SelectorPage from "@/pages/SelectorPage";
-import ValidatePage from "@/pages/ValidatePage";
 import TradesPage from "@/pages/TradesPage";
 import ConfigPage from "@/pages/ConfigPage";
 
 const NAV_ITEMS = [
   { label: "대시보드", href: "/" },
   { label: "마켓", href: "/markets" },
-  { label: "백테스트", href: "/backtest" },
-  { label: "최적화", href: "/optimize" },
-  { label: "전략 비교", href: "/compare" },
-  { label: "전략 추천", href: "/selector" },
-  { label: "전략 검증", href: "/validate" },
   { label: "거래 내역", href: "/trades" },
   { label: "설정", href: "/config" },
 ] as const;
@@ -60,11 +50,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<OverviewPage />} />
           <Route path="/markets" element={<MarketsPage />} />
-          <Route path="/backtest" element={<BacktestPage />} />
-          <Route path="/optimize" element={<OptimizePage />} />
-          <Route path="/compare" element={<ComparePage />} />
-          <Route path="/selector" element={<SelectorPage />} />
-          <Route path="/validate" element={<ValidatePage />} />
           <Route path="/trades" element={<TradesPage />} />
           <Route path="/config" element={<ConfigPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
@@ -91,47 +76,6 @@ function NavIcon({ label }: { label: string }) {
         <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
           <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
           <polyline points="16 7 22 7 22 13" />
-        </svg>
-      );
-    case "백테스트":
-      return (
-        <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-        </svg>
-      );
-    case "최적화":
-      return (
-        <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <path d="M12 20V10" />
-          <path d="M18 20V4" />
-          <path d="M6 20v-4" />
-        </svg>
-      );
-    case "전략 비교":
-      return (
-        <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <rect x="3" y="3" width="8" height="18" rx="1" />
-          <rect x="13" y="8" width="8" height="13" rx="1" />
-          <path d="M7 7v10M17 12v5" />
-        </svg>
-      );
-    case "전략 추천":
-      return (
-        <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <circle cx="12" cy="12" r="10" />
-          <circle cx="12" cy="12" r="6" />
-          <circle cx="12" cy="12" r="2" />
-          <line x1="12" y1="2" x2="12" y2="6" />
-          <line x1="12" y1="18" x2="12" y2="22" />
-          <line x1="2" y1="12" x2="6" y2="12" />
-          <line x1="18" y1="12" x2="22" y2="12" />
-        </svg>
-      );
-    case "전략 검증":
-      return (
-        <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <path d="M9 11l3 3L22 4" />
-          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
         </svg>
       );
     case "거래 내역":

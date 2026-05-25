@@ -15,6 +15,8 @@ logger = get_logger(__name__)
 _BASE_URL = "https://www.okx.com"
 _RATE_LIMIT_REQUESTS = 20
 _RATE_LIMIT_WINDOW = 2.0  # seconds
+_RETRYABLE_API_CODES = {"50011", "50102"}
+_MAX_REQUEST_ATTEMPTS = 3
 
 
 class RateLimiter:
@@ -42,6 +44,38 @@ class RateLimiter:
                 self._timestamps = [t for t in self._timestamps if now - t < self._window]
 
             self._timestamps.append(time.monotonic())
+
+
+def _safe_json_response(response: httpx.Response) -> dict[str, Any] | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_retryable_okx_response(status_code: int, code: str, body: str) -> bool:
+    normalized = body.lower()
+    return (
+        status_code == 429
+        or code in _RETRYABLE_API_CODES
+        or "timestamp request expired" in normalized
+        or "too many requests" in normalized
+    )
+
+
+def _okx_error_detail(result: dict[str, Any]) -> tuple[str, str]:
+    msg = str(result.get("msg", "unknown error"))
+    detail_msgs = []
+    for item in result.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        s_code = item.get("sCode", "")
+        s_msg = item.get("sMsg", "")
+        if s_code or s_msg:
+            detail_msgs.append(f"[{s_code}] {s_msg}")
+    detail = "; ".join(detail_msgs) if detail_msgs else msg
+    return msg, detail
 
 
 class OKXClient:
@@ -107,8 +141,6 @@ class OKXClient:
         """Execute an authenticated API request with rate limiting."""
         import json
 
-        await self._rate_limiter.acquire()
-
         body_str = json.dumps(data) if data else ""
         # Path for signing must include query string
         sign_path = path
@@ -117,47 +149,77 @@ class OKXClient:
             if query:
                 sign_path = f"{path}?{query}"
 
-        headers = self._build_headers(method, sign_path, body_str)
         client = await self._get_client()
 
         log = logger.bind(method=method, path=path)
 
-        try:
-            if method.upper() == "GET":
-                response = await client.get(path, params=params, headers=headers)
-            else:
-                response = await client.request(
-                    method, path, content=body_str, headers=headers
+        last_response: httpx.Response | None = None
+        for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+            await self._rate_limiter.acquire()
+            headers = self._build_headers(method, sign_path, body_str)
+            try:
+                if method.upper() == "GET":
+                    response = await client.get(path, params=params, headers=headers)
+                else:
+                    response = await client.request(
+                        method, path, content=body_str, headers=headers
+                    )
+            except httpx.TransportError as exc:
+                log.error("http_transport_error", error=str(exc), attempt=attempt)
+                if attempt < _MAX_REQUEST_ATTEMPTS:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+                raise
+
+            last_response = response
+            result = _safe_json_response(response)
+            code = str(result.get("code", "0")) if result is not None else "0"
+
+            if response.status_code != 200:
+                if _is_retryable_okx_response(response.status_code, code, response.text):
+                    log.warning(
+                        "http_retryable_error",
+                        status_code=response.status_code,
+                        code=code,
+                        body=response.text[:500],
+                        attempt=attempt,
+                    )
+                    if attempt < _MAX_REQUEST_ATTEMPTS:
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                log.error(
+                    "http_error",
+                    status_code=response.status_code,
+                    body=response.text[:500],
                 )
-        except httpx.TransportError as exc:
-            log.error("http_transport_error", error=str(exc))
-            raise
+                response.raise_for_status()
 
-        if response.status_code != 200:
-            log.error(
-                "http_error",
-                status_code=response.status_code,
-                body=response.text[:500],
-            )
-            response.raise_for_status()
+            if result is None:
+                result = response.json()
 
-        result: dict[str, Any] = response.json()
-        code = result.get("code", "0")
-        if code != "0":
-            msg = result.get("msg", "unknown error")
-            # Extract detailed sub-error from data array
-            detail_msgs = []
-            for item in result.get("data", []):
-                s_code = item.get("sCode", "")
-                s_msg = item.get("sMsg", "")
-                if s_code or s_msg:
-                    detail_msgs.append(f"[{s_code}] {s_msg}")
-            detail = "; ".join(detail_msgs) if detail_msgs else msg
-            log.error("api_error", code=code, msg=msg, detail=detail)
-            raise RuntimeError(f"OKX API error {code}: {detail}")
+            code = str(result.get("code", "0"))
+            if code != "0":
+                msg, detail = _okx_error_detail(result)
+                if code in _RETRYABLE_API_CODES:
+                    log.warning(
+                        "api_retryable_error",
+                        code=code,
+                        msg=msg,
+                        detail=detail,
+                        attempt=attempt,
+                    )
+                    if attempt < _MAX_REQUEST_ATTEMPTS:
+                        await asyncio.sleep(0.5 * attempt)
+                        continue
+                log.error("api_error", code=code, msg=msg, detail=detail)
+                raise RuntimeError(f"OKX API error {code}: {detail}")
 
-        log.debug("api_request_ok", code=code)
-        return result
+            log.debug("api_request_ok", code=code, attempt=attempt)
+            return result
+
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise RuntimeError(f"OKX request failed after {_MAX_REQUEST_ATTEMPTS} attempts: {method} {path}")
 
     # ------------------------------------------------------------------ #
     # Market data                                                          #
@@ -239,6 +301,7 @@ class OKXClient:
         order_type: str = "market",
         cl_ord_id: Optional[str] = None,
         pos_side: Optional[str] = None,
+        reduce_only: bool = False,
     ) -> dict[str, Any]:
         """Place a futures order.
 
@@ -255,6 +318,8 @@ class OKXClient:
         }
         if pos_side:
             data["posSide"] = pos_side
+        if reduce_only:
+            data["reduceOnly"] = "true"
         if cl_ord_id is not None:
             data["clOrdId"] = cl_ord_id
 

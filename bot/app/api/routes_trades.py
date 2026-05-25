@@ -21,7 +21,6 @@ from app.db.database import get_db
 from app.logging_config import get_logger
 from app.models.order import Order
 from app.models.position import Position
-from app.models.strategy_config import StrategyConfig
 from app.models.trade import Trade
 
 logger = get_logger(__name__)
@@ -59,7 +58,6 @@ class TradeOut(BaseModel):
     exit_time: Optional[datetime]
     status: str
     source: str
-    backtest_run_id: Optional[uuid.UUID]
 
     model_config = {"from_attributes": True}
 
@@ -121,7 +119,7 @@ class AccountBalanceResponse(BaseModel):
     summary="Query trades with optional filters",
 )
 async def list_trades(
-    source: Optional[Literal["live", "backtest"]] = Query(default=None),
+    source: Optional[Literal["live", "paper"]] = Query(default=None),
     pair: Optional[str] = Query(default=None),
     strategy: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=1000),
@@ -142,35 +140,10 @@ async def list_trades(
     result = await db.execute(stmt)
     trades = result.scalars().all()
 
-    # Fallback strategy labels for legacy rows recorded as "unknown".
-    fallback_pairs = {
-        t.pair
-        for t in trades
-        if (t.strategy_name or "").strip().lower() in ("", "unknown")
-    }
-    fallback_strategy_by_pair: dict[str, str] = {}
-    if fallback_pairs:
-        cfg_result = await db.execute(
-            select(StrategyConfig.pair, StrategyConfig.strategy_name).where(
-                StrategyConfig.is_active.is_(True),
-                StrategyConfig.pair.in_(fallback_pairs),
-            )
-        )
-        candidates: dict[str, set[str]] = {}
-        for pair_name, strategy_name in cfg_result.all():
-            candidates.setdefault(str(pair_name), set()).add(str(strategy_name))
-        fallback_strategy_by_pair = {
-            pair_name: next(iter(names))
-            for pair_name, names in candidates.items()
-            if len(names) == 1
-        }
-
     rows: list[TradeOut] = []
     for trade in trades:
         item = TradeOut.model_validate(trade)
         strategy_name = item.strategy_name
-        if (strategy_name or "").strip().lower() in ("", "unknown"):
-            strategy_name = fallback_strategy_by_pair.get(item.pair, strategy_name)
         item.direction = _normalize_direction(item.direction)
         item.strategy_name = strategy_name or "unknown"
         rows.append(item)
@@ -183,7 +156,7 @@ async def list_trades(
     summary="Realized PnL summary for live trades",
 )
 async def get_pnl(
-    source: Literal["live", "backtest"] = Query(default="live"),
+    source: Literal["live", "paper"] = Query(default="live"),
     db: AsyncSession = Depends(get_db),
 ) -> PnLResponse:
     # Only consider closed trades (status == "closed") with non-null pnl.

@@ -57,8 +57,6 @@ function HealthBadge({ health }: { health: HealthStatus | null }) {
 
   const dbOk = health.db === "ok";
   const apiOk = health.okx_api.status === "ok";
-  const wsOk = health.okx_ws === "connected";
-  const cbOk = health.circuit_breaker === "closed";
 
   return (
     <div className="bg-[#161b27] border border-slate-800 rounded-xl p-5">
@@ -94,19 +92,10 @@ function HealthBadge({ health }: { health: HealthStatus | null }) {
           </span>
         </li>
         <li className="flex items-center justify-between">
-          <span className="text-slate-400">웹소켓</span>
+          <span className="text-slate-400">Legacy 서킷브레이커</span>
           <span className="flex items-center gap-1.5">
-            <HealthDot ok={wsOk} />
-            <span className={wsOk ? "text-green-400" : "text-red-400"}>
-              {health.okx_ws}
-            </span>
-          </span>
-        </li>
-        <li className="flex items-center justify-between">
-          <span className="text-slate-400">서킷브레이커</span>
-          <span className="flex items-center gap-1.5">
-            <HealthDot ok={cbOk} />
-            <span className={cbOk ? "text-green-400" : "text-yellow-400"}>
+            <HealthDot ok={health.circuit_breaker === "removed"} />
+            <span className="text-slate-400">
               {health.circuit_breaker}
             </span>
           </span>

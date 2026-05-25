@@ -26,9 +26,6 @@ class Trade(Base):
     exit_time: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(nullable=False)
     source: Mapped[str] = mapped_column(nullable=False)
-    backtest_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("backtest_runs.id"), nullable=True
-    )
     entry_order_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("orders.id"), nullable=True
     )

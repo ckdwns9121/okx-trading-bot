@@ -5,15 +5,12 @@ from typing import Any, Optional
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.logging_config import get_logger
-from app.models.backtest_run import BacktestRun
 from app.models.candle import Candle
 from app.models.order import Order
 from app.models.position import Position
-from app.models.strategy_config import StrategyConfig
 from app.models.trade import Trade
 
 logger = get_logger(__name__)
@@ -168,62 +165,3 @@ async def update_position(
     result = await session.execute(select(Position).where(Position.pair == pair))
     return result.scalar_one_or_none()
 
-
-# ------------------------------------------------------------------ #
-# BacktestRun operations                                               #
-# ------------------------------------------------------------------ #
-
-
-async def get_backtest_run(session: AsyncSession, run_id: UUID) -> Optional[BacktestRun]:
-    """Return a single backtest run by id."""
-    result = await session.execute(
-        select(BacktestRun).where(BacktestRun.id == run_id)
-    )
-    return result.scalar_one_or_none()
-
-
-async def create_backtest_run(
-    session: AsyncSession, data: dict[str, Any]
-) -> BacktestRun:
-    """Insert a new BacktestRun record."""
-    run = BacktestRun(**data)
-    session.add(run)
-    await session.flush()
-    await session.refresh(run)
-    return run
-
-
-# ------------------------------------------------------------------ #
-# StrategyConfig operations                                            #
-# ------------------------------------------------------------------ #
-
-
-async def get_active_configs(session: AsyncSession) -> list[StrategyConfig]:
-    """Return all active strategy configs."""
-    result = await session.execute(
-        select(StrategyConfig).where(StrategyConfig.is_active.is_(True))
-    )
-    return list(result.scalars().all())
-
-
-async def upsert_config(
-    session: AsyncSession, data: dict[str, Any]
-) -> StrategyConfig:
-    """Insert or update a StrategyConfig on (strategy_name, pair) conflict."""
-    stmt = (
-        pg_insert(StrategyConfig)
-        .values(**data)
-        .on_conflict_do_update(
-            constraint="uq_strategy_config_name_pair",
-            set_={
-                "timeframe": pg_insert(StrategyConfig).excluded.timeframe,
-                "parameters_json": pg_insert(StrategyConfig).excluded.parameters_json,
-                "leverage": pg_insert(StrategyConfig).excluded.leverage,
-                "is_active": pg_insert(StrategyConfig).excluded.is_active,
-            },
-        )
-        .returning(StrategyConfig)
-    )
-    result = await session.execute(stmt)
-    await session.flush()
-    return result.scalar_one()

@@ -1,4 +1,4 @@
-"""Shared technical indicator calculations for use across strategies.
+"""Shared technical indicator calculations for research modules.
 
 All functions accept numpy arrays (oldest-first ordering).
 """

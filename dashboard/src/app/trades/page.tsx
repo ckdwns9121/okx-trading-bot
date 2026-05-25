@@ -5,7 +5,7 @@ import { getTrades } from "@/lib/api";
 import type { Trade } from "@/lib/types";
 import TradeTable from "@/components/TradeTable";
 
-type Source = "live" | "backtest";
+type Source = "live" | "paper";
 
 const PAGE_SIZE = 50;
 
@@ -60,7 +60,7 @@ export default function TradesPage() {
 
       {/* Tab toggle */}
       <div className="flex gap-1 bg-[#161b27] border border-slate-800 rounded-lg p-1 w-fit">
-        {(["live", "backtest"] as Source[]).map((s) => (
+        {(["live", "paper"] as Source[]).map((s) => (
           <button
             key={s}
             onClick={() => {
@@ -75,7 +75,7 @@ export default function TradesPage() {
                 : "text-slate-400 hover:text-white"
             }`}
           >
-            {s === "live" ? "실시간 거래" : "백테스트 거래"}
+            {s === "live" ? "실시간 거래" : "페이퍼 거래"}
           </button>
         ))}
       </div>
