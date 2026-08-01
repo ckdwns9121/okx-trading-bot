@@ -1,9 +1,10 @@
-# OKX Trading Bot (Demo/Live) + Dashboard + Desktop
+# OKX Trading Bot (Demo) + Dashboard + Desktop
 
-OKX 선물(스왑) 자동매매를 위한 통합 프로젝트입니다.
+OKX 자동매매 실험 프로젝트입니다. **리스크 안전장치 우선** 원칙으로 재구축되었으며,
+현재는 검증 단계(페이퍼/데모 트레이딩)만 실행합니다. 실거래 실행기는 의도적으로 없습니다.
 
-- **Bot API (FastAPI)**: Funding/OI 데모 트레이더 상태, 포지션/거래/로그 관리
-- **Web Dashboard (Next.js)**: 실시간 상태, 마켓, 거래 내역, 런타임 진단 UI
+- **Bot API (FastAPI)**: 리스크 게이트/킬스위치, 장부 대사, 체결 품질(TCA), 페이퍼 상태, 런타임 로그
+- **Web Dashboard (Next.js)**: 킬스위치 긴급 정지, 리스크 한도, 실시간 로그, 마켓/거래 내역
 - **Desktop App (Tauri + React + TS)**: 데스크탑 환경에서 동일 기능 사용
 - **DB (PostgreSQL)**: 거래, 런타임 이벤트 로그, 연구용 시장 스냅샷 영구 저장
 
@@ -15,10 +16,10 @@ OKX 선물(스왑) 자동매매를 위한 통합 프로젝트입니다.
 
 ```text
 .
-├─ bot/           # FastAPI + Funding/OI 연구/데모 실행 + OKX 연동
+├─ bot/           # FastAPI + 안전장치(risk gate/reconciliation/TCA) + 전략/트레이더 + OKX 연동
 ├─ dashboard/     # Next.js 웹 대시보드
 ├─ desktop/       # Tauri 데스크탑 앱
-├─ docs/          # 운영/전략 문서
+├─ docs/          # 리서치/운영 문서
 ├─ docker-compose.yml
 └─ .env(.example)
 ```
@@ -36,13 +37,11 @@ cp .env.example .env
 핵심값:
 
 - `OKX_API_KEY`, `OKX_SECRET`, `OKX_PASSPHRASE`
-- `OKX_MODE=demo` (데모계좌)
+- `OKX_MODE=demo` (데모계좌 — 데모 트레이더는 demo 모드가 아니면 실행을 거부합니다)
 - `DATABASE_URL`
-- (선택) 텔레그램 알림
-  - `TELEGRAM_NOTIFICATIONS_ENABLED=true`
-  - `TELEGRAM_BOT_TOKEN=...`
-  - `TELEGRAM_CHAT_ID=...`
-  - `TELEGRAM_COMMANDS_ENABLED=true`
+- 리스크 한도: `RISK_MAX_ORDER_NOTIONAL_USD`, `RISK_MAX_TOTAL_EXPOSURE_USD`,
+  `MAX_DAILY_LOSS_USD`, `RISK_MAX_ORDERS_PER_MINUTE` 등 (`.env.example` 참고)
+- (선택) 텔레그램 알림: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
 ### 2-2. 전체 스택 실행
 
@@ -56,63 +55,100 @@ docker compose up -d --build
 - Bot API: http://127.0.0.1:8000
 - OpenAPI: http://127.0.0.1:8000/docs
 
-### 2-3. Crowded Perp Unwind Research
+---
 
-현재 연구 경로는 전략 실행이 아니라 OKX 공개 데이터 수집과 이벤트 스터디입니다.
-promotion gate를 통과하기 전까지 전략 파일을 추가하거나 자동 등록하지 않습니다.
+## 3) 안전장치 (모든 주문의 전제 조건)
+
+모든 트레이더(페이퍼/데모)는 주문 전에 반드시 아래를 통과합니다.
+
+| 장치 | 내용 |
+|---|---|
+| Pre-trade Risk Gate | 주문당 금액·종목/총 노출 한도·가격 괴리·분당 주문 수 검사 |
+| Kill Switch | 일일 손실 한도 초과 또는 장부 불일치 시 자동 발동, 파일로 영속화(재시작에도 유지), 수동 발동/해제 가능 |
+| Reconciliation | 봇 내부 장부 vs OKX 실제 포지션 주기 대조, 불일치 시 킬스위치 |
+| TCA (체결 품질) | 주문마다 판단가 vs 체결가 기록 → 전략 문제와 체결 문제를 구분 |
 
 ```bash
-# OKX public endpoint contract 문서
-sed -n '1,220p' docs/research/okx_public_data_contract.md
+# 리스크 상태 / 킬스위치
+curl http://127.0.0.1:8000/api/risk/status
+curl -X POST http://127.0.0.1:8000/api/risk/kill-switch/trip -H 'Content-Type: application/json' -d '{"reason":"manual stop"}'
+curl -X POST http://127.0.0.1:8000/api/risk/kill-switch/reset
 
-# 공개 데이터 dry-run 스냅샷
+# 장부 대사 / 체결 품질 요약
+curl "http://127.0.0.1:8000/api/risk/reconciliation"
+curl http://127.0.0.1:8000/api/risk/execution-quality
+```
+
+대시보드 설정 페이지에서도 킬스위치 상태 확인과 긴급 정지가 가능합니다.
+
+---
+
+## 4) 현재 전략: Daily MA Trend Following (BTC/ETH)
+
+20/50/100일 이동평균 앙상블 기반 추세추종, 롱/플랫 전용(숏 없음).
+종가가 3개 MA 중 몇 개 위에 있는지로 목표 비중(0/33/67/100%)을 정합니다.
+
+전략 수명주기(승격 게이트): `백테스트 → 페이퍼/데모 → 소액 실거래 → 증액`.
+각 단계는 이전 단계 통과 근거가 있어야 넘어갑니다.
+
+### 4-1. 백테스트 (실데이터, 수수료 반영, 룩어헤드 차단)
+
+```bash
+docker compose exec bot python -m scripts.run_trend_following_paper_trader --backtest --backtest-days 900
+```
+
+### 4-2. 내장 페이퍼 트레이딩 (주문 전송 없음, 현물 시뮬레이션)
+
+```bash
+docker compose exec -d bot python -m scripts.run_trend_following_paper_trader
+curl http://127.0.0.1:8000/api/paper/trend-following   # 가상 장부 조회
+```
+
+### 4-3. OKX 데모 트레이딩 (데모 계좌에 실제 주문, 무기한 1x)
+
+```bash
+# 1회 평가 (스모크 테스트)
+docker compose exec bot python -m scripts.run_trend_following_demo_trader --once
+
+# 상시 루프 (매시간 체크, 새 일봉 확정 시에만 판단)
+docker compose exec -d bot python -m scripts.run_trend_following_demo_trader
+```
+
+- 계정 포지션 모드(net / long·short)를 자동 감지합니다.
+- `OKX_MODE=demo`가 아니면 실행을 거부합니다.
+
+### 4-4. 관찰
+
+```bash
+curl http://127.0.0.1:8000/api/trading/logs    # 신호/체결/오류 이벤트
+curl http://127.0.0.1:8000/api/health          # API/DB/OKX 연결 상태
+```
+
+---
+
+## 5) 시장 데이터 수집 (리서치용)
+
+```bash
 cd bot
 .venv/bin/python scripts/collect_crowded_perp_snapshots.py --dry-run --duration 30 --interval 10
-
-# synthetic event-study dry-run
-.venv/bin/python scripts/run_crowded_unwind_event_study.py --dry-run
-
-# DB에 저장된 snapshot 기반 event-study
-.venv/bin/python scripts/run_crowded_unwind_event_study.py --inst BTC-USDT-SWAP --limit 5000
+.venv/bin/python scripts/collect_basis_arbitrage_snapshots.py --dry-run --duration 30 --interval 10
 ```
 
-연구 계획과 검증 기준은 `.omx/plans/prd-crowded-perp-unwind-pipeline.md` 및
-`.omx/plans/test-spec-crowded-perp-unwind-pipeline.md`에 기록되어 있습니다.
+전략 리서치 배경은 `docs/research/trading-bot-feature-landscape-2026.md` 참고
+(오픈소스 봇 기능 조사 + 기관 시스템 구조 + 이 프로젝트의 갭 분석).
 
-### 2-4. Funding/OI Demo Trader 상태 확인
+---
 
-Legacy 캔들 전략 엔진, 백테스트 API, 최적화 API, 전략 설정 API는 제거되었습니다.
-현재 실행/관찰 대상은 Funding/OI 데모 트레이더입니다.
+## 6) 테스트
 
 ```bash
-# Funding/OI 데모 트레이더 상태
-curl http://127.0.0.1:8000/api/trading/funding-oi-demo/status
-
-# 런타임 로그
-curl http://127.0.0.1:8000/api/trading/logs
-
-# API/DB/OKX 연결 상태
-curl http://127.0.0.1:8000/api/health
+cd bot && .venv/bin/python -m pytest         # 백엔드 (전략/안전장치/API)
+cd dashboard && npm run build                 # 대시보드
 ```
 
 ---
 
-## 3) 현재 전략
-
-현재 코드베이스에 남긴 실행 전략은 `Funding + OI Flush Reversal` 데모 트레이더입니다.
-RSI/Bollinger/MACD류 Legacy 캔들 전략, 전략 자동 등록, 백테스트/최적화/검증 화면은 제거되었습니다.
-
----
-
-## 4) 운영 팁
-
-- Funding/OI 데모 트레이더는 별도 실행 프로세스로 운용합니다.
-- 설정 화면은 실행 상태, 감시 종목, 오픈 포지션, 주문/청산 오류 수를 보여줍니다.
-- 로그는 `/api/trading/logs`에서 확인 가능하며 DB 영구 저장을 우선 사용합니다.
-
----
-
-## 5) 데스크탑 앱(Tauri)
+## 7) 데스크탑 앱(Tauri)
 
 ```bash
 cd desktop

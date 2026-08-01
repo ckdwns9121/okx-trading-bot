@@ -81,6 +81,18 @@ class OKXPublicMarketData:
 
         return [self._normalize_candle(row) for row in result.get("data", [])]
 
+    async def get_instruments(
+        self,
+        *,
+        inst_type: str = "SWAP",
+        inst_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"instType": inst_type}
+        if inst_id is not None:
+            params["instId"] = inst_id
+        result = await self._request("/api/v5/public/instruments", params=params)
+        return result.get("data", [])
+
     async def get_ticker(self, pair: str) -> dict[str, Any]:
         result = await self._request("/api/v5/market/ticker", params={"instId": pair})
         rows = result.get("data", [])

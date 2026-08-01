@@ -363,6 +363,14 @@ class OKXClient:
         result = await self._request("GET", "/api/v5/account/balance")
         return result
 
+    async def get_position_mode(self) -> str:
+        """Return the account position mode: 'net_mode' or 'long_short_mode'."""
+        result = await self._request("GET", "/api/v5/account/config")
+        rows = result.get("data", [])
+        if not rows:
+            raise RuntimeError("OKX account config is empty")
+        return str(rows[0].get("posMode") or "net_mode")
+
     async def get_positions(self) -> list[dict[str, Any]]:
         """Fetch open positions."""
         result = await self._request("GET", "/api/v5/account/positions")
