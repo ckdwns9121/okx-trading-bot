@@ -1,12 +1,11 @@
 import type {
   AccountBalance,
-  BasisArbitrageResponse,
-  FundingOiDemoStatus,
   HealthStatus,
-  MarketDislocationResponse,
+  KillSwitchState,
   MarketTicker,
   PnlSummary,
   Position,
+  RiskStatus,
   TradingLogEvent,
   Trade,
   TradeSource,
@@ -75,18 +74,23 @@ export async function getTradingLogs(limit = 120): Promise<TradingLogEvent[]> {
   return data.items ?? [];
 }
 
-export async function getFundingOiDemoStatus(): Promise<FundingOiDemoStatus> {
-  return fetchJson<FundingOiDemoStatus>("/api/trading/funding-oi-demo/status");
-}
-
-export async function getMarketDislocation(): Promise<MarketDislocationResponse> {
-  return fetchJson<MarketDislocationResponse>("/api/trading/market-dislocation");
-}
-
-export async function getBasisArbitrage(): Promise<BasisArbitrageResponse> {
-  return fetchJson<BasisArbitrageResponse>("/api/trading/basis-arbitrage");
-}
-
 export async function getMarkets(): Promise<MarketTicker[]> {
   return fetchJson<MarketTicker[]>("/api/markets");
+}
+
+export async function getRiskStatus(): Promise<RiskStatus> {
+  return fetchJson<RiskStatus>("/api/risk/status");
+}
+
+export async function tripKillSwitch(reason: string): Promise<KillSwitchState> {
+  return fetchJson<KillSwitchState>("/api/risk/kill-switch/trip", {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function resetKillSwitch(): Promise<KillSwitchState> {
+  return fetchJson<KillSwitchState>("/api/risk/kill-switch/reset", {
+    method: "POST",
+  });
 }

@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@postgres:5432/trading"
 
     MAX_DAILY_LOSS_USD: float = 100.0
+    RISK_MAX_ORDER_NOTIONAL_USD: float = 1000.0
+    RISK_MAX_INSTRUMENT_NOTIONAL_USD: float = 2000.0
+    RISK_MAX_TOTAL_EXPOSURE_USD: float = 4000.0
+    RISK_MAX_PRICE_DEVIATION_PCT: float = 1.0
+    RISK_MAX_ORDERS_PER_MINUTE: int = 6
+    RISK_KILL_SWITCH_FILE: str = "state/kill_switch.json"
+    RISK_EXECUTION_LOG_FILE: str = "state/execution_quality.jsonl"
     MAX_MONTHLY_LOSS_USD: float = 500.0
     RISK_STARTING_EQUITY_USD: float = 10000.0
     MAX_TOTAL_DRAWDOWN_PCT: float = 10.0

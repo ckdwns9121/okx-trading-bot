@@ -28,6 +28,8 @@ desktop/src-tauri/target/
 .omc/
 .claude/
 bot/data/
+bot/state/
+state/
 *.log
 
 # OS

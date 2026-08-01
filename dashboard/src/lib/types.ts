@@ -72,28 +72,18 @@ export interface TradingLogEvent {
   details?: Record<string, unknown>;
 }
 
-export interface FundingOiDemoStatus {
-  running: boolean;
-  stale: boolean;
-  status: "running" | "stale" | "stopped" | "not_started" | string;
-  strategy_name: string;
-  mode?: "live" | "demo" | string | null;
-  dry_run?: boolean | null;
-  started_at?: string | null;
-  last_loop_at?: string | null;
-  latest_event_at?: string | null;
-  snapshot_count_seen?: number | null;
-  open_position?: Record<string, unknown> | null;
-  closed_trade_count: number;
-  processed_event_count: number;
-  order_error_count: number;
-  close_error_count: number;
-  reconciliation_count: number;
-  reconciliation_error_count: number;
-  watched_instrument_count: number;
-  watched_instruments: string[];
-  config: Record<string, unknown>;
-  message?: string | null;
+export interface KillSwitchState {
+  tripped: boolean;
+  reason?: string | null;
+  source?: string | null;
+  changed_at?: string | null;
+}
+
+export interface RiskStatus {
+  kill_switch: KillSwitchState;
+  limits: Record<string, number>;
+  kill_switch_file: string;
+  execution_log_file: string;
 }
 
 export interface HealthStatus {
@@ -108,71 +98,6 @@ export interface HealthStatus {
     stopped: number;
   };
   circuit_breaker: "removed" | string;
-}
-
-export interface MarketDislocationRow {
-  inst_id: string;
-  observed_at: string;
-  age_seconds: number;
-  price: number;
-  lookback_return_pct: number | null;
-  funding_rate: number | null;
-  oi_change_pct: number | null;
-  spread_pct: number;
-  book_imbalance: number;
-  trade_imbalance: number;
-  price_flush_score: number;
-  funding_heat_score: number;
-  oi_buildup_score: number;
-  spread_quality_score: number;
-  flow_imbalance_score: number;
-  book_imbalance_score: number;
-  dislocation_score: number;
-  candidate_side: string;
-  readiness: "ready" | "watch" | "cold" | string;
-  signal_ready: boolean;
-  reason: string;
-}
-
-export interface MarketDislocationResponse {
-  strategy_name: string;
-  generated_at: string;
-  lookback_seconds: number;
-  fresh_seconds: number;
-  item_count: number;
-  ready_count: number;
-  items: MarketDislocationRow[];
-}
-
-export interface BasisArbitrageRow {
-  inst_id: string;
-  spot_inst_id: string;
-  observed_at: string;
-  age_seconds: number;
-  perp_mid_price: number;
-  spot_mid_price: number;
-  basis_pct: number;
-  funding_rate: number | null;
-  funding_8h_pct: number | null;
-  estimated_daily_funding_pct: number | null;
-  perp_spread_pct: number;
-  spot_spread_pct: number;
-  estimated_round_trip_cost_pct: number;
-  net_funding_8h_after_cost_pct: number | null;
-  candidate_side: string;
-  carry_score: number;
-  readiness: "ready" | "watch" | "cold" | string;
-  signal_ready: boolean;
-  reason: string;
-}
-
-export interface BasisArbitrageResponse {
-  strategy_name: string;
-  generated_at: string;
-  fresh_seconds: number;
-  item_count: number;
-  ready_count: number;
-  items: BasisArbitrageRow[];
 }
 
 export interface MarketTicker {
