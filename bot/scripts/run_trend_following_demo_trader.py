@@ -357,6 +357,54 @@ async def process_pair(
     return trade
 
 
+async def sync_book_from_exchange(
+    *,
+    client: OKXClient,
+    state: dict[str, Any],
+    pairs: Sequence[str],
+) -> None:
+    """Adopt exchange positions as the local book at startup.
+
+    A fresh state file (first run, moved volume, manual demo trades) must not
+    read as an incident: at boot the exchange IS the truth. Mid-loop drift is
+    still treated as critical by reconcile_books.
+    """
+
+    book = state.setdefault("positions", {})
+    exchange: dict[str, dict[str, Any]] = {}
+    for row in await client.get_positions():
+        inst = str(row.get("instId") or "")
+        if inst not in pairs:
+            continue
+        try:
+            pos = Decimal(str(row.get("pos") or "0"))
+            avg_px = float(row.get("avgPx") or 0.0)
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+        if pos > 0:
+            exchange[inst] = {"contracts": str(pos), "avg_entry_price": avg_px}
+
+    before = {
+        pair: row
+        for pair, row in book.items()
+        if Decimal(str(row.get("contracts") or "0")) > 0
+    }
+    if before == exchange:
+        return
+
+    for pair in list(book):
+        if pair not in exchange:
+            book.pop(pair)
+    book.update(exchange)
+    add_event(
+        event="demo_trend_book_synced",
+        level="warning",
+        strategy=STRATEGY_NAME,
+        message=f"local book adopted exchange positions at startup: {sorted(exchange) or 'flat'}",
+        details={"before": before, "after": exchange},
+    )
+
+
 async def reconcile_books(
     *,
     client: OKXClient,
@@ -414,6 +462,24 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         mode=settings.OKX_MODE,
     )
 
+    # Persist runtime events to the DB so the dashboard log page sees this
+    # process. Logging must never block trading, so failures are tolerated.
+    persistence_enabled = False
+    try:
+        from app.core.runtime_events import configure_persistence
+
+        from app.db.database import AsyncSessionLocal
+
+        configure_persistence(session_factory=AsyncSessionLocal)
+        persistence_enabled = True
+    except Exception as exc:
+        add_event(
+            event="demo_trend_persistence_warning",
+            level="warning",
+            strategy=STRATEGY_NAME,
+            message=f"runtime event DB persistence unavailable: {exc}",
+        )
+
     fills = 0
     started_at = datetime.now(timezone.utc)
     try:
@@ -451,6 +517,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "mode": settings.OKX_MODE,
             },
         )
+        await sync_book_from_exchange(client=client, state=state, pairs=pairs)
 
         while True:
             for pair in pairs:
@@ -509,6 +576,15 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             message="OKX demo trend trader stopped",
             details={"fills": fills},
         )
+        if persistence_enabled:
+            try:
+                from app.core.runtime_events import shutdown_persistence
+
+                # Give the queue a moment to drain the final events.
+                await asyncio.sleep(1.0)
+                await shutdown_persistence()
+            except Exception:
+                pass
 
     return {"fills": fills, "state_file": str(state_path), "kill_switch": risk_gate.kill_switch.status()}
 

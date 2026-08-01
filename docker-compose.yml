@@ -23,6 +23,21 @@ services:
       postgres:
         condition: service_healthy
     env_file: .env
+    volumes:
+      - botstate:/app/state
+    restart: always
+
+  demo-trader:
+    build: ./bot
+    command: python -m scripts.run_trend_following_demo_trader
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bot:
+        condition: service_started
+    env_file: .env
+    volumes:
+      - botstate:/app/state
     restart: always
 
   dashboard:
@@ -38,6 +53,7 @@ services:
 
 volumes:
   pgdata:
+  botstate:
 
 networks:
   default:
