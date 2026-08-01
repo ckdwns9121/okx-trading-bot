@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
 
-from app.core.crowded_unwind_research import book_imbalance
 from app.exchange.public_market_data import OKXPublicMarketData
 
 DEFAULT_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP")
@@ -16,6 +15,13 @@ MAX_DURATION_SECONDS = 24 * 60 * 60
 MAX_BOOK_DEPTH = 20
 MAX_RAW_TRADES = 20
 BACKOFF_SECONDS = 1.0
+
+
+def book_imbalance(bid_depth_notional: float, ask_depth_notional: float) -> float:
+    total = float(bid_depth_notional) + float(ask_depth_notional)
+    if total <= 0.0:
+        return 0.0
+    return (float(bid_depth_notional) - float(ask_depth_notional)) / total
 
 
 def parse_instruments(raw: str) -> tuple[str, ...]:

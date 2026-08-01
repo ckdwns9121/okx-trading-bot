@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Any, Sequence
 
-from app.core.basis_arbitrage import basis_pct, estimated_daily_funding_pct, spot_inst_id_from_swap
 from app.exchange.public_market_data import OKXPublicMarketData
 
 DEFAULT_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP")
@@ -15,6 +14,25 @@ MAX_INSTRUMENTS = 20
 MAX_DURATION_SECONDS = 24 * 60 * 60
 MAX_BOOK_DEPTH = 20
 BACKOFF_SECONDS = 1.0
+FUNDING_INTERVALS_PER_DAY = 3.0
+
+
+def spot_inst_id_from_swap(inst_id: str) -> str:
+    if not inst_id.endswith("-SWAP"):
+        raise ValueError("basis snapshots require OKX swap IDs ending in -SWAP")
+    return inst_id.removesuffix("-SWAP")
+
+
+def basis_pct(*, perp_mid_price: float, spot_mid_price: float) -> float:
+    if perp_mid_price <= 0.0 or spot_mid_price <= 0.0:
+        return 0.0
+    return ((perp_mid_price / spot_mid_price) - 1.0) * 100.0
+
+
+def estimated_daily_funding_pct(funding_rate: float | None) -> float | None:
+    if funding_rate is None:
+        return None
+    return float(funding_rate) * FUNDING_INTERVALS_PER_DAY * 100.0
 
 
 def parse_instruments(raw: str) -> tuple[str, ...]:

@@ -5,7 +5,6 @@ import json
 import pytest
 
 from scripts import collect_crowded_perp_snapshots as collector
-from scripts import run_crowded_unwind_event_study as event_study
 
 
 class _FakeSnapshotClient:
@@ -122,45 +121,3 @@ async def test_collect_one_snapshot_records_endpoint_gap_and_backoff(monkeypatch
     assert snapshot["data_quality_flags"]["dry_run_only"] is True
     assert "HTTP 429" in snapshot["raw_json"]["endpoint_errors"]["funding"]
     assert sleep_calls == [0.25]
-
-
-def test_event_study_dry_run_report_is_research_only(capsys: pytest.CaptureFixture[str]) -> None:
-    exit_code = event_study.main(["--dry-run"])
-
-    output = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert output["research_only"] is True
-    assert output["promotion_gate"]["passed"] is False
-
-
-def test_event_study_db_backed_run_loads_snapshots_and_can_persist(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    async def fake_load_snapshots_from_db(*, instruments, limit):
-        assert instruments == ("BTC-USDT-SWAP",)
-        assert limit == 20
-        return event_study.synthetic_snapshots()
-
-    async def fake_persist_event_study(report, snapshots):
-        assert report["event_count"] > 0
-        assert snapshots
-        return report["event_count"]
-
-    monkeypatch.setattr(event_study, "load_snapshots_from_db", fake_load_snapshots_from_db)
-    monkeypatch.setattr(event_study, "persist_event_study", fake_persist_event_study)
-
-    exit_code = event_study.main([
-        "--inst",
-        "BTC-USDT-SWAP",
-        "--limit",
-        "20",
-        "--lookback",
-        "6",
-        "--persist-events",
-    ])
-
-    output = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert output["research_only"] is True
-    assert output["persisted_event_count"] == output["event_count"]
