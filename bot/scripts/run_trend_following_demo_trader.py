@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pairs", default="BTC-USDT-SWAP,ETH-USDT-SWAP")
     parser.add_argument("--allocation-usd", type=float, default=1000.0, help="Target notional per pair.")
+    parser.add_argument(
+        "--leverage",
+        type=int,
+        default=1,
+        help="Margin leverage. >1 amplifies drawdowns and invalidates the 1x backtest evidence.",
+    )
     parser.add_argument("--ma-periods", default="20,50,100")
     parser.add_argument("--min-trade-usd", type=float, default=50.0)
     parser.add_argument("--poll-seconds", type=int, default=3600)
@@ -167,6 +173,7 @@ async def process_pair(
     allocation_usd: float,
     min_trade_usd: float,
     position_mode: str = "net_mode",
+    leverage: int = 1,
 ) -> dict[str, Any] | None:
     candles = await fetch_daily_candles(market_data, pair, days=max(ma_periods) + 5)
     if len(candles) <= max(ma_periods):
@@ -273,7 +280,7 @@ async def process_pair(
         pair=pair,
         side=side,
         size=str(contracts),
-        leverage=1,
+        leverage=leverage,
         order_type="market",
         cl_ord_id=cl_ord_id,
         pos_side="long" if long_short else None,
@@ -494,9 +501,19 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 strategy=STRATEGY_NAME,
                 message=f"could not read position mode, assuming net_mode: {exc}",
             )
+        if args.leverage != 1:
+            add_event(
+                event="demo_trend_leverage_notice",
+                level="warning",
+                strategy=STRATEGY_NAME,
+                message=(
+                    f"running at {args.leverage}x leverage: drawdowns scale accordingly and"
+                    " results no longer validate the 1x strategy evidence"
+                ),
+            )
         for pair in pairs:
             try:
-                await client.set_leverage(pair, 1)
+                await client.set_leverage(pair, args.leverage)
             except Exception as exc:
                 add_event(
                     event="demo_trend_leverage_warning",
@@ -534,6 +551,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         allocation_usd=args.allocation_usd,
                         min_trade_usd=args.min_trade_usd,
                         position_mode=position_mode,
+                        leverage=args.leverage,
                     )
                     if trade:
                         fills += 1

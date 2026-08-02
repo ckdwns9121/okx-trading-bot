@@ -29,7 +29,7 @@ services:
 
   demo-trader:
     build: ./bot
-    command: python -m scripts.run_trend_following_demo_trader
+    command: python -m scripts.run_trend_following_demo_trader --allocation-usd 10000 --leverage 10
     depends_on:
       postgres:
         condition: service_healthy
