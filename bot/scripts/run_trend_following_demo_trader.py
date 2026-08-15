@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from app.config import settings
+from app.core.donchian import DonchianParams, decide as donchian_decide
 from app.core.execution_quality import ExecutionQualityLog, ExecutionRecord
+from app.core.indicators import atr_wilder
 from app.core.reconciliation import reconcile_positions
 from app.core.risk_gate import AccountState, OrderIntent, RiskGate, build_risk_gate_from_settings
 from app.core.runtime_events import add_event
@@ -39,8 +41,13 @@ from scripts.run_trend_following_paper_trader import (
 )
 
 STRATEGY_NAME = "Daily MA Trend Following (OKX demo)"
+DONCHIAN_STRATEGY_NAME = "Donchian Breakout (OKX demo)"
 FILL_POLL_ATTEMPTS = 5
 FILL_POLL_DELAY_SECONDS = 1.0
+
+
+def strategy_label(strategy: str) -> str:
+    return DONCHIAN_STRATEGY_NAME if strategy == "donchian" else STRATEGY_NAME
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -52,6 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Margin leverage. >1 amplifies drawdowns and invalidates the 1x backtest evidence.",
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("ma", "donchian"),
+        default="ma",
+        help="Signal engine: MA-ensemble fractions or Donchian channel breakout (all-in/all-out).",
+    )
+    parser.add_argument("--donchian-entry", type=int, default=55)
+    parser.add_argument("--donchian-exit", type=int, default=20)
+    parser.add_argument(
+        "--donchian-atr-stop",
+        type=float,
+        default=2.0,
+        help="ATR(20) multiple below entry that force-exits; 0 disables.",
     )
     parser.add_argument("--ma-periods", default="20,50,100")
     parser.add_argument("--min-trade-usd", type=float, default=50.0)
@@ -174,14 +195,22 @@ async def process_pair(
     min_trade_usd: float,
     position_mode: str = "net_mode",
     leverage: int = 1,
+    strategy: str = "ma",
+    donchian_params: DonchianParams | None = None,
 ) -> dict[str, Any] | None:
-    candles = await fetch_daily_candles(market_data, pair, days=max(ma_periods) + 5)
-    if len(candles) <= max(ma_periods):
+    label = strategy_label(strategy)
+    if strategy == "donchian":
+        donchian_params = donchian_params or DonchianParams()
+        min_history = donchian_params.warmup()
+    else:
+        min_history = max(ma_periods)
+    candles = await fetch_daily_candles(market_data, pair, days=min_history + 5)
+    if len(candles) <= min_history:
         add_event(
             event="demo_trend_skip",
             level="warning",
             pair=pair,
-            strategy=STRATEGY_NAME,
+            strategy=label,
             message=f"not enough daily candles for {pair} ({len(candles)})",
         )
         return None
@@ -191,7 +220,6 @@ async def process_pair(
         return None
 
     closes = [float(row["close"]) for row in candles]
-    signal = evaluate_trend(pair, closes, ma_periods=ma_periods)
     state["processed_candle_ts"][pair] = latest_ts
 
     ticker = await market_data.get_ticker(pair)
@@ -201,23 +229,72 @@ async def process_pair(
 
     current_contracts = await exchange_position_contracts(client, pair)
     current_notional = contract_notional_usd(current_contracts, price, spec["ct_val"])
-    target_notional = signal.target_fraction * allocation_usd
+
+    if strategy == "donchian":
+        assert donchian_params is not None
+        highs = [float(row["high"]) for row in candles]
+        lows = [float(row["low"]) for row in candles]
+        in_position = current_contracts > 0
+        book_row = state.get("positions", {}).get(pair) or {}
+        entry_price = float(book_row.get("avg_entry_price") or 0.0) or None
+        entry_meta = state.setdefault("donchian_entry", {}).get(pair) or {}
+        atr_series = atr_wilder(highs, lows, closes, donchian_params.atr_period)
+        current_atr = atr_series[-1]
+        atr_at_entry = float(entry_meta.get("atr") or 0.0) or (
+            float(current_atr) if current_atr is not None else None
+        )
+        decision_signal = donchian_decide(
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            in_position=in_position,
+            entry_price=entry_price,
+            atr_at_entry=atr_at_entry,
+            params=donchian_params,
+        )
+        if decision_signal.action == "enter":
+            target_fraction = 1.0
+        elif decision_signal.action == "exit":
+            target_fraction = 0.0
+        else:
+            target_fraction = 1.0 if in_position else 0.0
+        decision_price = closes[-1]
+        signal_message = (
+            f"{pair} donchian {decision_signal.action} ({decision_signal.reason}),"
+            f" close {closes[-1]:,.2f}"
+        )
+        signal_details: dict[str, Any] = {
+            "action": decision_signal.action,
+            "reason": decision_signal.reason,
+            "prior_high": decision_signal.prior_high,
+            "prior_low": decision_signal.prior_low,
+            "target_fraction": target_fraction,
+            "current_contracts": str(current_contracts),
+        }
+    else:
+        signal = evaluate_trend(pair, closes, ma_periods=ma_periods)
+        target_fraction = signal.target_fraction
+        decision_price = signal.close
+        signal_message = (
+            f"{pair} votes {signal.votes}/{signal.total},"
+            f" target ${target_fraction * allocation_usd:,.0f}, current ${current_notional:,.0f}"
+        )
+        signal_details = {
+            "votes": signal.votes,
+            "target_fraction": target_fraction,
+            "current_contracts": str(current_contracts),
+        }
+
+    target_notional = target_fraction * allocation_usd
     delta = target_notional - current_notional
 
     add_event(
         event="demo_trend_signal",
         pair=pair,
-        strategy=STRATEGY_NAME,
+        strategy=label,
         timeframe="1D",
-        message=(
-            f"{pair} votes {signal.votes}/{signal.total}, target ${target_notional:,.0f},"
-            f" current ${current_notional:,.0f}"
-        ),
-        details={
-            "votes": signal.votes,
-            "target_fraction": signal.target_fraction,
-            "current_contracts": str(current_contracts),
-        },
+        message=signal_message,
+        details=signal_details,
     )
 
     if abs(delta) < min_trade_usd:
@@ -242,7 +319,7 @@ async def process_pair(
         inst_id=pair,
         side=side,
         notional_usd=order_notional,
-        reference_price=signal.close,
+        reference_price=decision_price,
         execution_price=price,
         reduce_only=side == "sell",
     )
@@ -267,7 +344,7 @@ async def process_pair(
             event="demo_trend_order_rejected",
             level="warning",
             pair=pair,
-            strategy=STRATEGY_NAME,
+            strategy=label,
             message=f"risk gate rejected {side}: {'; '.join(decision.rejection_reasons)}",
         )
         return None
@@ -292,7 +369,7 @@ async def process_pair(
             event="demo_trend_order_unfilled",
             level="error",
             pair=pair,
-            strategy=STRATEGY_NAME,
+            strategy=label,
             message=f"{side} {contracts} {pair} not confirmed filled; check manually",
         )
         return None
@@ -323,6 +400,20 @@ async def process_pair(
             row["avg_entry_price"] = 0.0
     row["contracts"] = str(held)
 
+    if strategy == "donchian":
+        entries = state.setdefault("donchian_entry", {})
+        if side == "buy":
+            atr_series = atr_wilder(
+                [float(r["high"]) for r in candles],
+                [float(r["low"]) for r in candles],
+                closes,
+                (donchian_params or DonchianParams()).atr_period,
+            )
+            last_atr = atr_series[-1]
+            entries[pair] = {"atr": float(last_atr) if last_atr is not None else 0.0}
+        elif held == 0:
+            entries.pop(pair, None)
+
     trade = {
         "inst_id": pair,
         "side": side,
@@ -331,8 +422,8 @@ async def process_pair(
         "notional_usd": filled_notional,
         "fee_usd": fee_usd,
         "realized_pnl_usd": realized,
-        "decision_price": signal.close,
-        "target_fraction": signal.target_fraction,
+        "decision_price": decision_price,
+        "target_fraction": target_fraction,
         "occurred_at": now.isoformat(),
         "cl_ord_id": cl_ord_id,
     }
@@ -343,21 +434,21 @@ async def process_pair(
             inst_id=pair,
             side=side,
             quantity=float(filled_contracts * spec["ct_val"]),
-            decision_price=signal.close,
+            decision_price=decision_price,
             fill_price=fill_price,
             fee_usd=fee_usd,
             occurred_at=now.isoformat(),
-            strategy=STRATEGY_NAME,
+            strategy=label,
             order_ref=cl_ord_id,
         )
     )
     add_event(
         event="demo_trend_fill",
         pair=pair,
-        strategy=STRATEGY_NAME,
+        strategy=label,
         message=(
             f"demo {side} {filled_contracts} contracts {pair} @ {fill_price:,.2f}"
-            f" (${filled_notional:,.0f}, target {signal.target_fraction:.2f})"
+            f" (${filled_notional:,.0f}, target {target_fraction:.2f})"
         ),
         details=trade,
     )
@@ -455,6 +546,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
     pairs = parse_swap_pairs(args.pairs)
     ma_periods = parse_ma_periods(args.ma_periods)
+    donchian_params = DonchianParams(
+        entry_period=args.donchian_entry,
+        exit_period=args.donchian_exit,
+        atr_period=20,
+        atr_stop_mult=args.donchian_atr_stop if args.donchian_atr_stop > 0 else None,
+    )
+    label = strategy_label(args.strategy)
     state_path = Path(args.state_file)
     state = load_state(state_path, pairs=pairs, allocation_usd=args.allocation_usd)
     state.setdefault("positions", {})
@@ -525,11 +623,17 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 
         add_event(
             event="demo_trend_started",
-            strategy=STRATEGY_NAME,
-            message=f"OKX demo trend trader started for {', '.join(pairs)}",
+            strategy=label,
+            message=f"OKX demo trader started for {', '.join(pairs)} (strategy={args.strategy})",
             details={
                 "pairs": list(pairs),
+                "strategy": args.strategy,
                 "ma_periods": list(ma_periods),
+                "donchian": {
+                    "entry_period": donchian_params.entry_period,
+                    "exit_period": donchian_params.exit_period,
+                    "atr_stop_mult": donchian_params.atr_stop_mult,
+                },
                 "allocation_usd": args.allocation_usd,
                 "mode": settings.OKX_MODE,
             },
@@ -552,6 +656,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         min_trade_usd=args.min_trade_usd,
                         position_mode=position_mode,
                         leverage=args.leverage,
+                        strategy=args.strategy,
+                        donchian_params=donchian_params,
                     )
                     if trade:
                         fills += 1

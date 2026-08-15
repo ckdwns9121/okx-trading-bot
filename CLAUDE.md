@@ -56,10 +56,18 @@ docker compose exec bot alembic upgrade head
 - **`execution_quality.py`** — TCA: records decision price vs fill price per order to a
   JSONL log; separates strategy decay from bad execution.
 
-### Strategy (bot/app/core/trend_following.py)
-Pure logic: SMA ensemble signal (default 20/50/100d) → target exposure fraction
-(votes/total, long/flat only), rebalance planning, paper book, and a look-ahead-free
-backtest (decision at close t, fill at open t+1, fees included).
+### Strategies (bot/app/core/)
+All pure logic, look-ahead-free backtests (decision at close t, fill at open t+1, fees included):
+- **`trend_following.py`** — SMA ensemble signal (default 20/50/100d) → target exposure
+  fraction (votes/total, long/flat only), rebalance planning, paper book shared by all
+  strategy backtests.
+- **`donchian.py`** — Turtle-style channel breakout (55d entry / 20d exit / 2×ATR stop),
+  long/flat, all-in/all-out. Beat the MA ensemble on both 900d and 400d windows; currently
+  the demo trader's engine (`--strategy donchian`).
+- **`volatility_breakout.py`** — Larry Williams k·range on 1h bars (research; fee-bled in
+  backtest, not promoted). **`bband_rsi.py`** — BB+RSI mean reversion (refuted: -45%/900d).
+- **`indicators.py`** — shared EMA/RSI/ATR/Bollinger.
+- `scripts/run_strategy_backtests.py` compares all candidates on identical OKX data windows.
 
 ### Runners (bot/scripts/)
 - `run_trend_following_paper_trader.py` — internal simulation on spot pairs; also hosts

@@ -76,20 +76,21 @@ def parse_ma_periods(raw: str) -> tuple[int, ...]:
     return periods
 
 
-async def fetch_daily_candles(
+async def fetch_candles(
     market_data: OKXPublicMarketData,
     pair: str,
     *,
-    days: int,
+    count: int,
+    bar: str = "1D",
 ) -> list[dict[str, Any]]:
-    """Fetch ascending confirmed daily candles, paginating into history."""
+    """Fetch ascending confirmed candles of any bar size, paginating into history."""
 
     collected: dict[str, dict[str, Any]] = {}
     after: str | None = None
-    while len(collected) < days:
+    while len(collected) < count:
         rows = await market_data.get_candles(
             pair,
-            "1D",
+            bar,
             limit=MAX_CANDLES_PER_REQUEST,
             after=after,
         )
@@ -105,7 +106,18 @@ async def fetch_daily_candles(
         after = next_after
 
     ordered = sorted(collected.values(), key=lambda item: int(item["timestamp"]))
-    return ordered[-days:]
+    return ordered[-count:]
+
+
+async def fetch_daily_candles(
+    market_data: OKXPublicMarketData,
+    pair: str,
+    *,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Backwards-compatible wrapper: ascending confirmed daily candles."""
+
+    return await fetch_candles(market_data, pair, count=days, bar="1D")
 
 
 # --------------------------------------------------------------------------- #

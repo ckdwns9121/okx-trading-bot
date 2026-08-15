@@ -202,3 +202,98 @@ async def test_run_refuses_live_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     args = demo.build_parser().parse_args(["--once", "--state-file", str(tmp_path / "s.json")])
     with pytest.raises(SystemExit):
         await demo.run(args)
+
+
+@pytest.mark.asyncio
+async def test_donchian_strategy_enters_on_breakout(tmp_path: Path) -> None:
+    candles = []
+    for index in range(40):
+        close = 100.0 + index * 1.0
+        candles.append(
+            {
+                "timestamp": str(index * 86_400_000),
+                "open": close - 0.5,
+                "high": close + 0.1,
+                "low": close - 0.6,
+                "close": close,
+                "confirm": "1",
+            }
+        )
+    price = candles[-1]["close"]
+    market = _FakeMarketData(candles, mid_price=price)
+    client = _FakeOKXClient(fill_price=price)
+    state = base_state()
+
+    from app.core.donchian import DonchianParams
+
+    trade = await demo.process_pair(
+        pair="BTC-USDT-SWAP",
+        client=client,
+        market_data=market,
+        state=state,
+        risk_gate=make_gate(tmp_path),
+        execution_log=ExecutionQualityLog(tmp_path / "exec.jsonl"),
+        spec=SPEC,
+        ma_periods=(5, 10, 20),
+        allocation_usd=1000.0,
+        min_trade_usd=50.0,
+        strategy="donchian",
+        donchian_params=DonchianParams(entry_period=10, exit_period=5, atr_period=10),
+    )
+
+    assert trade is not None and trade["side"] == "buy"
+    assert trade["target_fraction"] == 1.0
+    assert state["donchian_entry"]["BTC-USDT-SWAP"]["atr"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_donchian_strategy_exits_on_breakdown(tmp_path: Path) -> None:
+    candles = []
+    for index in range(40):
+        close = 200.0 - index * 1.0
+        candles.append(
+            {
+                "timestamp": str(index * 86_400_000),
+                "open": close + 0.5,
+                "high": close + 0.6,
+                "low": close - 0.1,
+                "close": close,
+                "confirm": "1",
+            }
+        )
+    price = candles[-1]["close"]
+    market = _FakeMarketData(candles, mid_price=price)
+    client = _FakeOKXClient(
+        positions=[
+            {
+                "instId": "BTC-USDT-SWAP",
+                "pos": "500",
+                "posSide": "net",
+                "notionalUsd": str(500 * 0.01 * price),
+            }
+        ],
+        fill_price=price,
+    )
+    state = base_state()
+    state["positions"]["BTC-USDT-SWAP"] = {"contracts": "500", "avg_entry_price": 190.0}
+
+    from app.core.donchian import DonchianParams
+
+    trade = await demo.process_pair(
+        pair="BTC-USDT-SWAP",
+        client=client,
+        market_data=market,
+        state=state,
+        risk_gate=make_gate(tmp_path),
+        execution_log=ExecutionQualityLog(tmp_path / "exec.jsonl"),
+        spec=SPEC,
+        ma_periods=(5, 10, 20),
+        allocation_usd=1000.0,
+        min_trade_usd=50.0,
+        strategy="donchian",
+        donchian_params=DonchianParams(entry_period=10, exit_period=5, atr_period=10),
+    )
+
+    assert trade is not None and trade["side"] == "sell"
+    assert trade["target_fraction"] == 0.0
+    assert client.orders[0]["reduce_only"] is True
