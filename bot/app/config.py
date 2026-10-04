@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     RISK_KILL_SWITCH_FILE: str = "state/kill_switch.json"
     RISK_EXECUTION_LOG_FILE: str = "state/execution_quality.jsonl"
     PAPER_TREND_STATE_FILE: str = "state/trend_following_paper.json"
+    DEMO_TREND_STATE_FILE: str = "state/trend_following_demo.json"
     MAX_MONTHLY_LOSS_USD: float = 500.0
     RISK_STARTING_EQUITY_USD: float = 10000.0
     MAX_TOTAL_DRAWDOWN_PCT: float = 10.0

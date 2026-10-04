@@ -129,6 +129,7 @@ def create_app() -> FastAPI:
     )
 
     # Routers
+    from app.api.routes_backtest import router as backtest_router
     from app.api.routes_markets import router as markets_router
     from app.api.routes_paper import router as paper_router
     from app.api.routes_risk import router as risk_router
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(markets_router)
     app.include_router(risk_router)
     app.include_router(paper_router)
+    app.include_router(backtest_router)
 
     # Root endpoint
     @app.get("/", tags=["meta"], summary="Bot identity")

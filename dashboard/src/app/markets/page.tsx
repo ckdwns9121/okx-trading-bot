@@ -277,9 +277,9 @@ export default function MarketsPage() {
                     <td className="py-3.5 px-3 text-right">
                       <span className={`inline-flex items-center gap-0.5 font-medium tabular-nums ${t.change_pct_24h >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                         {t.change_pct_24h >= 0 ? (
-                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5H7z" /></svg>
+                          <span className="text-[10px] leading-none">▲</span>
                         ) : (
-                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5H7z" /></svg>
+                          <span className="text-[10px] leading-none">▼</span>
                         )}
                         {(t.change_pct_24h >= 0 ? "+" : "") + t.change_pct_24h.toFixed(2) + "%"}
                       </span>

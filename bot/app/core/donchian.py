@@ -114,6 +114,9 @@ def backtest_donchian(
     trade_count = 0
     wins = 0
     equity_curve: list[float] = []
+    # Mark timestamps come from the first instrument; all series are index-aligned.
+    clock_rows = next(iter(candles_by_inst.values()))
+    curve_ts: list[str] = []
 
     for index in range(warmup, length - 1):
         for inst_id, rows in candles_by_inst.items():
@@ -176,12 +179,16 @@ def backtest_donchian(
             for inst_id, rows in candles_by_inst.items()
         }
         equity_curve.append(book.equity_usd(marks))
+        curve_ts.append(str(clock_rows[index + 1].get("timestamp", index + 1)))
 
     starting_equity = allocation_usd_per_inst * len(candles_by_inst)
     final_equity = equity_curve[-1] if equity_curve else starting_equity
     round_trips = trade_count // 2
     return {
         "strategy": "donchian_breakout",
+        "equity_curve": [
+            {"ts": ts, "equity": round(value, 2)} for ts, value in zip(curve_ts, equity_curve)
+        ],
         "params": {
             "entry_period": params.entry_period,
             "exit_period": params.exit_period,

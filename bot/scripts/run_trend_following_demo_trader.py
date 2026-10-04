@@ -556,6 +556,25 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     state_path = Path(args.state_file)
     state = load_state(state_path, pairs=pairs, allocation_usd=args.allocation_usd)
     state.setdefault("positions", {})
+    # Record what this process is actually running so the API/UI can show it
+    # without guessing from CLI flags or compose files.
+    state["strategy"] = label
+    state["config"] = {
+        "strategy": args.strategy,
+        "pairs": list(pairs),
+        "allocation_usd": args.allocation_usd,
+        "leverage": args.leverage,
+        "poll_seconds": args.poll_seconds,
+        "min_trade_usd": args.min_trade_usd,
+        "ma_periods": list(ma_periods),
+        "donchian": {
+            "entry_period": donchian_params.entry_period,
+            "exit_period": donchian_params.exit_period,
+            "atr_period": donchian_params.atr_period,
+            "atr_stop_mult": donchian_params.atr_stop_mult,
+        },
+        "mode": settings.OKX_MODE,
+    }
 
     risk_gate = build_risk_gate_from_settings(settings)
     execution_log = ExecutionQualityLog(settings.RISK_EXECUTION_LOG_FILE)

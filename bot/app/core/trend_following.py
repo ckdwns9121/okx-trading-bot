@@ -298,6 +298,9 @@ def backtest_trend_following(
     book = PaperBook(cash_usd=allocation_usd_per_inst * len(candles_by_inst))
     trade_count = 0
     equity_curve: list[float] = []
+    # Mark timestamps come from the first instrument; all series are index-aligned.
+    clock_rows = next(iter(candles_by_inst.values()))
+    curve_ts: list[str] = []
 
     per_inst_closes = {
         inst_id: [float(row["close"]) for row in rows]
@@ -349,6 +352,7 @@ def backtest_trend_following(
             for inst_id, rows in candles_by_inst.items()
         }
         equity_curve.append(book.equity_usd(marks))
+        curve_ts.append(str(clock_rows[index + 1].get("timestamp", index + 1)))
 
     starting_equity = allocation_usd_per_inst * len(candles_by_inst)
     final_equity = equity_curve[-1] if equity_curve else starting_equity
@@ -381,4 +385,8 @@ def backtest_trend_following(
             ((bh_curve[-1] / starting_equity) - 1.0) * 100.0 if bh_curve else 0.0
         ),
         "buy_hold_max_drawdown_pct": _max_drawdown_pct(bh_curve),
+        "equity_curve": [
+            {"ts": ts, "equity": round(value, 2), "buy_hold": round(bh, 2)}
+            for ts, value, bh in zip(curve_ts, equity_curve, bh_curve)
+        ],
     }
