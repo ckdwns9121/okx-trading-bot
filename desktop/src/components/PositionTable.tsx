@@ -1,76 +1,46 @@
 import type { Position } from "@/lib/types";
+import { deltaClass, fmtDateTime, fmtPrice, fmtUsd } from "@/lib/format";
+import { Badge, Empty, Td, Th } from "@/components/ui";
 
 interface Props {
   positions: Position[];
 }
 
-function ArrowUp() {
-  return (
-    <svg className="w-3 h-3 inline mr-1 text-green-400" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 4l8 8H4z" />
-    </svg>
-  );
-}
-
-function ArrowDown() {
-  return (
-    <svg className="w-3 h-3 inline mr-1 text-red-400" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 20l-8-8h16z" />
-    </svg>
-  );
-}
-
 export default function PositionTable({ positions }: Props) {
   if (positions.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-24 text-slate-500 text-sm">
-        포지션 없음
-      </div>
-    );
+    return <Empty title="열린 포지션이 없어요" sub="새 신호가 오면 여기에 표시됩니다" className="py-10" />;
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto -mx-6">
+      <table className="w-full min-w-[720px]">
         <thead>
-          <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
-            <th className="pb-3 pr-4 font-medium">거래쌍</th>
-            <th className="pb-3 pr-4 font-medium">방향</th>
-            <th className="pb-3 pr-4 font-medium">진입가</th>
-            <th className="pb-3 pr-4 font-medium">수량</th>
-            <th className="pb-3 pr-4 font-medium">레버리지</th>
-            <th className="pb-3 font-medium">미실현 손익</th>
+          <tr className="border-b border-line">
+            <Th className="pl-6">종목</Th>
+            <Th>방향</Th>
+            <Th align="right">진입가</Th>
+            <Th align="right">수량</Th>
+            <Th align="right">레버리지</Th>
+            <Th align="right">평가 손익</Th>
+            <Th align="right" className="pr-6">진입 시각</Th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-800/50">
+        <tbody>
           {positions.map((pos) => {
             const isLong = pos.direction === "long";
-            const pnlPositive = pos.unrealized_pnl >= 0;
             return (
-              <tr key={pos.id} className="hover:bg-slate-800/30 transition-colors">
-                <td className="py-3 pr-4 font-medium text-white">{pos.pair}</td>
-                <td className="py-3 pr-4">
-                  <span
-                    className={`inline-flex items-center text-xs font-semibold ${
-                      isLong ? "text-green-400" : "text-red-400"
-                    }`}
-                  >
-                    {isLong ? <ArrowUp /> : <ArrowDown />}
-                    {pos.direction === "long" ? "롱" : "숏"}
-                  </span>
-                </td>
-                <td className="py-3 pr-4 text-slate-300">
-                  ${pos.entry_price.toLocaleString("en-US", { minimumFractionDigits: 2 })}
-                </td>
-                <td className="py-3 pr-4 text-slate-300">{pos.quantity}</td>
-                <td className="py-3 pr-4 text-slate-300">{pos.leverage}x</td>
-                <td
-                  className={`py-3 font-semibold ${
-                    pnlPositive ? "text-green-400" : "text-red-400"
-                  }`}
-                >
-                  {pnlPositive ? "+" : ""}${pos.unrealized_pnl.toFixed(2)}
-                </td>
+              <tr key={pos.id} className="border-b border-line last:border-0 hover:bg-bg-subtle transition-colors">
+                <Td className="pl-6 font-semibold text-ink">{pos.pair}</Td>
+                <Td>
+                  <Badge tone={isLong ? "red" : "blue"}>{isLong ? "롱" : "숏"}</Badge>
+                </Td>
+                <Td align="right" className="text-ink-secondary">{fmtPrice(pos.entry_price)}</Td>
+                <Td align="right" className="text-ink-secondary">{pos.quantity}</Td>
+                <Td align="right" className="text-ink-secondary">{pos.leverage}x</Td>
+                <Td align="right" className={`font-semibold ${deltaClass(pos.unrealized_pnl)}`}>
+                  {fmtUsd(pos.unrealized_pnl, { sign: true })}
+                </Td>
+                <Td align="right" className="pr-6 text-ink-faint text-sm">{fmtDateTime(pos.opened_at)}</Td>
               </tr>
             );
           })}

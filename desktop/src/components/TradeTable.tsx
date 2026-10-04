@@ -1,98 +1,60 @@
 import type { Trade } from "@/lib/types";
+import { deltaClass, fmtDateTime, fmtPct, fmtPrice, fmtUsd } from "@/lib/format";
+import { Badge, Empty, Td, Th } from "@/components/ui";
 
 interface Props {
   trades: Trade[];
 }
 
-function fmtPrice(value: number | null): string {
-  if (value === null) return "—";
-  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2 })}`;
-}
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 export default function TradeTable({ trades }: Props) {
   const sorted = [...trades].sort(
-    (a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime()
+    (a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime(),
   );
 
   if (sorted.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-24 text-slate-500 text-sm">
-        거래 내역 없음
-      </div>
-    );
+    return <Empty title="거래 내역이 없어요" sub="체결이 생기면 여기에 쌓입니다" />;
   }
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full min-w-[960px]">
         <thead>
-          <tr className="text-left text-xs text-slate-500 border-b border-slate-800">
-            <th className="pb-3 pr-4 font-medium">거래쌍</th>
-            <th className="pb-3 pr-4 font-medium">전략</th>
-            <th className="pb-3 pr-4 font-medium">방향</th>
-            <th className="pb-3 pr-4 font-medium">진입가</th>
-            <th className="pb-3 pr-4 font-medium">청산가</th>
-            <th className="pb-3 pr-4 font-medium">손익</th>
-            <th className="pb-3 pr-4 font-medium">손익%</th>
-            <th className="pb-3 pr-4 font-medium">레버리지</th>
-            <th className="pb-3 font-medium">시간</th>
+          <tr className="border-b border-line">
+            <Th className="pl-6">종목</Th>
+            <Th>전략</Th>
+            <Th>방향</Th>
+            <Th align="right">진입가</Th>
+            <Th align="right">청산가</Th>
+            <Th align="right">손익</Th>
+            <Th align="right">수익률</Th>
+            <Th align="right">레버리지</Th>
+            <Th align="right" className="pr-6">진입 시각</Th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-800/50">
+        <tbody>
           {sorted.map((t) => {
-            const pnlPos = t.pnl !== null && t.pnl >= 0;
             const isLong = t.direction === "long";
+            const open = t.status === "open";
             return (
-              <tr key={t.id} className="hover:bg-slate-800/30 transition-colors">
-                <td className="py-2.5 pr-4 font-medium text-white">{t.pair}</td>
-                <td className="py-2.5 pr-4 text-slate-400 text-xs">{t.strategy_name}</td>
-                <td className="py-2.5 pr-4">
-                  <span
-                    className={`text-xs font-semibold ${
-                      isLong ? "text-green-400" : "text-red-400"
-                    }`}
-                  >
-                    {t.direction === "long" ? "롱" : "숏"}
+              <tr key={t.id} className="border-b border-line last:border-0 hover:bg-bg-subtle transition-colors">
+                <Td className="pl-6 font-semibold text-ink">{t.pair}</Td>
+                <Td className="text-sm text-ink-muted max-w-[200px] truncate">{t.strategy_name}</Td>
+                <Td>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Badge tone={isLong ? "red" : "blue"}>{isLong ? "롱" : "숏"}</Badge>
+                    {open && <Badge tone="grey">보유 중</Badge>}
                   </span>
-                </td>
-                <td className="py-2.5 pr-4 text-slate-300">{fmtPrice(t.entry_price)}</td>
-                <td className="py-2.5 pr-4 text-slate-300">{fmtPrice(t.exit_price)}</td>
-                <td
-                  className={`py-2.5 pr-4 font-semibold ${
-                    t.pnl === null
-                      ? "text-slate-400"
-                      : pnlPos
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {t.pnl === null ? "—" : `${t.pnl >= 0 ? "+" : "-"}$${Math.abs(t.pnl).toFixed(2)}`}
-                </td>
-                <td
-                  className={`py-2.5 pr-4 font-semibold ${
-                    t.pnl_pct === null
-                      ? "text-slate-400"
-                      : t.pnl_pct >= 0
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }`}
-                >
-                  {t.pnl_pct === null
-                    ? "—"
-                    : `${t.pnl_pct >= 0 ? "+" : ""}${t.pnl_pct.toFixed(2)}%`}
-                </td>
-                <td className="py-2.5 pr-4 text-slate-300">{t.leverage}x</td>
-                <td className="py-2.5 text-slate-500 text-xs">{fmtDate(t.entry_time)}</td>
+                </Td>
+                <Td align="right" className="text-ink-secondary">{fmtPrice(t.entry_price)}</Td>
+                <Td align="right" className="text-ink-secondary">{t.exit_price === null ? "-" : fmtPrice(t.exit_price)}</Td>
+                <Td align="right" className={`font-semibold ${deltaClass(t.pnl)}`}>
+                  {t.pnl === null ? "-" : fmtUsd(t.pnl, { sign: true })}
+                </Td>
+                <Td align="right" className={`font-semibold ${deltaClass(t.pnl_pct)}`}>
+                  {fmtPct(t.pnl_pct)}
+                </Td>
+                <Td align="right" className="text-ink-secondary">{t.leverage}x</Td>
+                <Td align="right" className="pr-6 text-ink-faint text-sm">{fmtDateTime(t.entry_time)}</Td>
               </tr>
             );
           })}

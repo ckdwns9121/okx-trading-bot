@@ -18,22 +18,6 @@ export interface Trade {
   source: TradeSource | string;
 }
 
-export interface Order {
-  id: string;
-  pair: string;
-  side: "buy" | "sell" | string;
-  order_type: "market" | "limit" | "stop" | "stop_limit" | string;
-  price: number | null;
-  quantity: number;
-  leverage: number;
-  status: "pending" | "filled" | "partial" | "cancelled" | "rejected" | string;
-  exchange_order_id: string | null;
-  cl_ord_id: string | null;
-  error_message: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Position {
   id: number;
   pair: string;
@@ -72,30 +56,6 @@ export interface TradingLogEvent {
   details?: Record<string, unknown>;
 }
 
-export interface FundingOiDemoStatus {
-  running: boolean;
-  stale: boolean;
-  status: "running" | "stale" | "stopped" | "not_started" | string;
-  strategy_name: string;
-  mode?: "live" | "demo" | string | null;
-  dry_run?: boolean | null;
-  started_at?: string | null;
-  last_loop_at?: string | null;
-  latest_event_at?: string | null;
-  snapshot_count_seen?: number | null;
-  open_position?: Record<string, unknown> | null;
-  closed_trade_count: number;
-  processed_event_count: number;
-  order_error_count: number;
-  close_error_count: number;
-  reconciliation_count: number;
-  reconciliation_error_count: number;
-  watched_instrument_count: number;
-  watched_instruments: string[];
-  config: Record<string, unknown>;
-  message?: string | null;
-}
-
 export interface HealthStatus {
   db: "ok" | "error" | string;
   okx_api: {
@@ -110,69 +70,114 @@ export interface HealthStatus {
   circuit_breaker: "removed" | string;
 }
 
-export interface MarketDislocationRow {
+export interface KillSwitchState {
+  tripped: boolean;
+  reason?: string | null;
+  source?: string | null;
+  changed_at?: string | null;
+}
+
+export interface RiskStatus {
+  kill_switch: KillSwitchState;
+  limits: Record<string, number>;
+  kill_switch_file: string;
+  execution_log_file: string;
+}
+
+/* ---------------- demo trader ---------------- */
+
+export interface DemoTraderConfig {
+  strategy: "ma" | "donchian" | string;
+  pairs: string[];
+  allocation_usd: number;
+  leverage: number;
+  poll_seconds: number;
+  min_trade_usd: number;
+  ma_periods: number[];
+  donchian: {
+    entry_period: number;
+    exit_period: number;
+    atr_period: number;
+    atr_stop_mult: number | null;
+  };
+  mode: "demo" | "live" | string;
+}
+
+export interface DemoTrade {
   inst_id: string;
-  observed_at: string;
-  age_seconds: number;
+  side: "buy" | "sell" | string;
+  contracts: string;
   price: number;
-  lookback_return_pct: number | null;
-  funding_rate: number | null;
-  oi_change_pct: number | null;
-  spread_pct: number;
-  book_imbalance: number;
-  trade_imbalance: number;
-  price_flush_score: number;
-  funding_heat_score: number;
-  oi_buildup_score: number;
-  spread_quality_score: number;
-  flow_imbalance_score: number;
-  book_imbalance_score: number;
-  dislocation_score: number;
-  candidate_side: string;
-  readiness: "ready" | "watch" | "cold" | string;
-  signal_ready: boolean;
-  reason: string;
+  notional_usd: number;
+  fee_usd: number;
+  realized_pnl_usd: number | null;
+  decision_price: number;
+  target_fraction: number;
+  occurred_at: string;
+  cl_ord_id: string;
 }
 
-export interface MarketDislocationResponse {
-  strategy_name: string;
-  generated_at: string;
-  lookback_seconds: number;
-  fresh_seconds: number;
-  item_count: number;
-  ready_count: number;
-  items: MarketDislocationRow[];
+export interface DemoTraderStatus {
+  running: boolean;
+  status: "running" | "stale" | "not_started" | string;
+  message?: string;
+  strategy?: string | null;
+  started_at?: string | null;
+  last_loop_at?: string | null;
+  age_seconds?: number | null;
+  stale_after_seconds?: number;
+  config?: DemoTraderConfig | null;
+  pairs?: string[];
+  processed_candle_ts?: Record<string, string>;
+  positions?: Record<string, { contracts: string; avg_entry_price: number }>;
+  trade_count?: number;
+  realized_pnl_usd?: number;
+  fees_paid_usd?: number;
+  recent_trades?: DemoTrade[];
 }
 
-export interface BasisArbitrageRow {
-  inst_id: string;
-  spot_inst_id: string;
-  observed_at: string;
-  age_seconds: number;
-  perp_mid_price: number;
-  spot_mid_price: number;
-  basis_pct: number;
-  funding_rate: number | null;
-  funding_8h_pct: number | null;
-  estimated_daily_funding_pct: number | null;
-  perp_spread_pct: number;
-  spot_spread_pct: number;
-  estimated_round_trip_cost_pct: number;
-  net_funding_8h_after_cost_pct: number | null;
-  candidate_side: string;
-  carry_score: number;
-  readiness: "ready" | "watch" | "cold" | string;
-  signal_ready: boolean;
-  reason: string;
+/* ---------------- backtest ---------------- */
+
+export interface BacktestRequest {
+  strategy: "donchian" | "ma";
+  pairs: string[];
+  days: number;
+  allocation_usd: number;
+  fee_pct: number;
+  min_trade_usd: number;
+  donchian: {
+    entry_period: number;
+    exit_period: number;
+    atr_period: number;
+    atr_stop_mult: number;
+  };
+  ma_periods: number[];
 }
 
-export interface BasisArbitrageResponse {
-  strategy_name: string;
-  generated_at: string;
-  fresh_seconds: number;
-  item_count: number;
-  ready_count: number;
-  items: BasisArbitrageRow[];
+export interface EquityPoint {
+  ts: string;
+  equity: number;
+  buy_hold?: number;
+}
+
+export interface BacktestResult {
+  strategy: string;
+  params?: Record<string, unknown>;
+  instruments: string[];
+  days_tested: number;
+  starting_equity_usd: number;
+  final_equity_usd: number;
+  total_return_pct: number;
+  max_drawdown_pct: number;
+  trade_count: number;
+  win_rate_pct?: number;
+  fees_paid_usd: number;
+  buy_hold_return_pct: number;
+  buy_hold_max_drawdown_pct: number;
+  equity_curve: EquityPoint[];
+  request: BacktestRequest;
+  candles_from: string;
+  candles_to: string;
 }
 
 export interface MarketTicker {
