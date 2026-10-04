@@ -141,3 +141,69 @@ def test_deflated_sharpe_ratio_penalises_many_trials() -> None:
     assert one is not None and many is not None
     assert one > many
     assert deflated_sharpe_ratio(rets[:10], n_trials=1, sharpe_variance_across_trials=0.0) is None
+
+
+# ---------------------------------------------------------------- v2 ----------
+
+
+def v2_params(**kw) -> XsMomentumParams:
+    base = dict(universe_size=4, min_history_days=120, btc_default=True, relative_to_btc=True,
+                target_vol=None, max_alts=2, entry_rank=5, exit_rank=10, max_weight=0.30, alt_total_cap=0.80)
+    base.update(kw)
+    return XsMomentumParams(**base)
+
+
+def test_v2_holds_btc_when_no_alt_beats_it() -> None:
+    n = 300
+    s = {
+        "BTC-USDT": make_series("BTC-USDT", trend(n, 100, 0.006, wobble=0.002), volume=5e8),
+        "SLOW-USDT": make_series("SLOW-USDT", trend(n, 10, 0.002, wobble=0.003), volume=1e8),  # positive but weaker than BTC
+    }
+    res = backtest_xs_momentum(s, params=v2_params())
+    for wk in res["weekly"]:
+        if wk["regime_on"]:
+            assert wk["weights"] == {"BTC-USDT": 1.0}
+    assert res["entries"] == 1  # the single BTC entry; no alt ever qualifies
+
+
+def test_v2_rotates_into_alt_that_beats_btc_and_keeps_btc_floor() -> None:
+    n = 300
+    s = {
+        "BTC-USDT": make_series("BTC-USDT", trend(n, 100, 0.003, wobble=0.002), volume=5e8),
+        "FAST-USDT": make_series("FAST-USDT", trend(n, 10, 0.010, wobble=0.004), volume=1e8),
+        "SLOW-USDT": make_series("SLOW-USDT", trend(n, 10, 0.001, wobble=0.004), volume=1e8),
+    }
+    res = backtest_xs_momentum(s, params=v2_params())
+    on = [wk for wk in res["weekly"] if wk["regime_on"]]
+    assert on
+    with_fast = [wk for wk in on if "FAST-USDT" in wk["weights"]]
+    assert len(with_fast) > len(on) * 0.8
+    for wk in with_fast:
+        assert "SLOW-USDT" not in wk["weights"]  # weaker than BTC → never a candidate
+        assert wk["weights"]["FAST-USDT"] <= 0.30 + 1e-9  # per-alt cap
+        assert wk["weights"]["BTC-USDT"] >= 0.20 - 1e-9  # BTC floor via alt_total_cap
+        assert pytest.approx(sum(wk["weights"].values()), abs=1e-9) == 1.0  # fully invested
+    assert res["regime_off_pct"] == 0.0
+
+
+def test_v2_rank_buffer_keeps_held_alt_until_it_falls_out() -> None:
+    from app.core.xs_momentum import _v2_targets
+
+    p = v2_params(max_alts=1, entry_rank=1, exit_rank=3)
+    n = 60
+    btc = make_series("BTC-USDT", trend(n, 100, 0.001, wobble=0.001))
+    alts = {f"A{i}-USDT": make_series(f"A{i}-USDT", trend(n, 10, 0.004 + 0.001 * i, wobble=0.002)) for i in range(4)}
+    series = {"BTC-USDT": btc, **alts}
+    t = btc.ts[-1]
+    vols = {k: 0.5 for k in alts}
+    rets = {k: [0.0] * 30 for k in alts}
+    scored = sorted(((0.004 + 0.001 * i, f"A{i}-USDT") for i in range(4)), reverse=True)  # A3 best … A0 worst
+    # not holding anything → buy the #1 ranked only
+    fresh = _v2_targets(scored, vols, rets, [], series, t, "BTC-USDT", p)
+    assert set(fresh) == {"A3-USDT", "BTC-USDT"}
+    # holding A2 (rank 2, within exit_rank 3) → kept, and no room for A3 because max_alts=1
+    held = _v2_targets(scored, vols, rets, ["A2-USDT"], series, t, "BTC-USDT", p)
+    assert set(held) == {"A2-USDT", "BTC-USDT"}
+    # holding A0 (rank 4, outside exit_rank) → dropped, replaced by #1
+    dropped = _v2_targets(scored, vols, rets, ["A0-USDT"], series, t, "BTC-USDT", p)
+    assert set(dropped) == {"A3-USDT", "BTC-USDT"}

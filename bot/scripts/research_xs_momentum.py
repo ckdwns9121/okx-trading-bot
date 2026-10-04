@@ -301,6 +301,144 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"\nwrote {out}")
 
 
+
+V2_HAIRCUT_CAGR_PP = 3.0  # survivorship haircut applied to the strategy only (spec v2 §8)
+V2_HAIRCUT_MDD_PP = 5.0
+
+
+def v2_base_params():
+    from app.core.xs_momentum import XsMomentumParams
+
+    return XsMomentumParams(btc_default=True, relative_to_btc=True, target_vol=None, max_alts=4,
+                            entry_rank=5, exit_rank=10, max_weight=0.30, alt_total_cap=0.80)
+
+
+def btc_regime_only(series: dict[str, Any], result: dict[str, Any], fee_pct_per_side: float = 0.15) -> dict[str, Any]:
+    """Benchmark ③: hold BTC only while the strategy's regime flag is on, same fee per switch."""
+    from app.core.xs_momentum import _perf
+
+    btc = series["BTC-USDT"]
+    fee = fee_pct_per_side / 100.0
+    flags = {w["ts"]: w["regime_on"] for w in result["weekly"]}
+    qty, cash = 0.0, result["starting_equity_usd"]
+    curve, ts = [], []
+    for i, t in enumerate(btc.ts):
+        if t < result["from"] or t > result["to"]:
+            continue
+        if t in flags:
+            px = btc.open[i]
+            if flags[t] and qty == 0.0:
+                qty, cash = cash * (1 - fee) / px, 0.0
+            elif not flags[t] and qty > 0.0:
+                cash, qty = qty * px * (1 - fee), 0.0
+        curve.append(cash + qty * btc.close[i]); ts.append(t)
+    perf = _perf(ts, curve)
+    return {k: v for k, v in perf.items() if k != "daily_returns"}
+
+
+def _haircut(res: dict[str, Any]) -> tuple[float, float]:
+    return res["cagr_pct"] - V2_HAIRCUT_CAGR_PP, res["max_drawdown_pct"] + V2_HAIRCUT_MDD_PP
+
+
+def _v2_pass_12(res: dict[str, Any]) -> tuple[bool, bool, str]:
+    bh = res["benchmark_btc_hold"]
+    cagr_h, mdd_h = _haircut(res)
+    c1 = mdd_h <= 0.5 * bh["max_drawdown_pct"]
+    c2 = res["sharpe"] >= 1.3 * bh["sharpe"] and cagr_h >= 0.7 * bh["cagr_pct"]
+    detail = (f"MDD {mdd_h:.1f}%(after +{V2_HAIRCUT_MDD_PP:.0f}pp) vs limit {0.5*bh['max_drawdown_pct']:.1f}% | "
+              f"Sharpe {res['sharpe']:.2f} vs {1.3*bh['sharpe']:.2f} needed | CAGR {cagr_h:.1f}%(after −{V2_HAIRCUT_CAGR_PP:.0f}pp) vs {0.7*bh['cagr_pct']:.1f}% needed")
+    return c1, c2, detail
+
+
+def _v2_criteria(res: dict[str, Any], res_2x: dict[str, Any] | None, grid: list[dict[str, Any]], dsr: float | None, bench3: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    c1, c2, detail = _v2_pass_12(res)
+    rows.append({"n": 1, "name": "MDD(haircut) ≤ 50% of BTC hold", "pass": c1, "detail": detail.split(" | ")[0]})
+    rows.append({"n": 2, "name": "Sharpe ≥ 1.3×BTC and CAGR(haircut) ≥ 0.7×BTC", "pass": c2, "detail": " | ".join(detail.split(" | ")[1:])})
+    if res_2x is not None:
+        a, b, d = _v2_pass_12(res_2x)
+        rows.append({"n": 3, "name": "criteria 1·2 hold at 2× cost", "pass": a and b, "detail": d})
+    else:
+        rows.append({"n": 3, "name": "criteria 1·2 hold at 2× cost", "pass": False, "detail": "not run"})
+    rows.append({"n": 4, "name": "≥150 alt entries", "pass": res["entries"] >= 150, "detail": f"{res['entries']} entries, {res['trade_count']} fills"})
+    if grid:
+        ok = sum(1 for g in grid if g["pass12"])
+        rows.append({"n": 5, "name": "all 27 neighbours pass 1·2", "pass": ok == len(grid), "detail": f"{ok}/{len(grid)} pass"})
+    else:
+        rows.append({"n": 5, "name": "all 27 neighbours pass 1·2", "pass": False, "detail": "grid not run"})
+    rows.append({"n": 6, "name": "Sharpe > BTC regime-only (rotation adds value)", "pass": res["sharpe"] > bench3["sharpe"],
+                 "detail": f"{res['sharpe']:.2f} vs regime-only BTC {bench3['sharpe']:.2f} (CAGR {bench3['cagr_pct']:.1f}%, MDD {bench3['max_drawdown_pct']:.1f}%)"})
+    rows.append({"n": 7, "name": "DSR ≥ 0.95 (cumulative trials)", "pass": (dsr or 0.0) >= 0.95, "detail": f"DSR {dsr:.3f}" if dsr is not None else "n/a"})
+    return rows
+
+
+def cmd_run_v2(args: argparse.Namespace) -> None:
+    from app.core.xs_momentum import CostModel, backtest_xs_momentum, deflated_sharpe_ratio
+
+    series = load_series()
+    print(f"loaded {len(series)} series  [spec v2: BTC default + relative momentum + rank buffer, no vol target]", flush=True)
+    base = v2_base_params()
+    main_start = int(datetime(2020, 7, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    oos_start = int(datetime(2024, 10, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+    ref = backtest_xs_momentum(series, params=base)
+    _log_trial("v2_base_full_reference", ref)
+    _print_result("v2 BASE — full history (reference only, universe too thin before 2020-07)", ref)
+
+    main = backtest_xs_momentum(series, params=base, start_ts=main_start)
+    _log_trial("v2_base_main", main)
+    _print_result("v2 BASE — main period 2020-07 →", main)
+    b3 = btc_regime_only(series, main)
+    print(f"  {'BTC regime-only':16} {b3['cagr_pct']:>7.1f}% {b3['ann_vol_pct']:>6.1f}% {b3['sharpe']:>7.2f} {b3['max_drawdown_pct']:>6.1f}% {b3['max_drawdown_days']:>9}")
+
+    oos = backtest_xs_momentum(series, params=base, start_ts=oos_start)
+    _log_trial("v2_base_oos", oos)
+    _print_result("v2 BASE — last 2 years", oos)
+    b3_oos = btc_regime_only(series, oos)
+    print(f"  {'BTC regime-only':16} {b3_oos['cagr_pct']:>7.1f}% {b3_oos['ann_vol_pct']:>6.1f}% {b3_oos['sharpe']:>7.2f} {b3_oos['max_drawdown_pct']:>6.1f}% {b3_oos['max_drawdown_days']:>9}")
+
+    if args.quick:
+        return
+
+    print("\ncost stress (main period):", flush=True)
+    stress = {}
+    for mult in (2, 3):
+        c = CostModel(fee_pct_per_side=0.15 * mult)
+        r = backtest_xs_momentum(series, params=base, cost=c, start_ts=main_start)
+        _log_trial(f"v2_cost_x{mult}", r)
+        stress[mult] = r
+        print(f"  {0.15*mult:.2f}%/side: CAGR {r['cagr_pct']:.1f}%  MDD {r['max_drawdown_pct']:.1f}%  Sharpe {r['sharpe']:.2f}  fees ${r['fees_usd']:.0f}")
+
+    print("\nneighbour grid (27, main period):", flush=True)
+    grid: list[dict[str, Any]] = []
+    for rs, rl in ((11, 22), (14, 28), (17, 34)):
+        for alts in (3, 4, 5):
+            for sma in (80, 100, 120):
+                p = replace(base, ret_short_days=rs, ret_long_days=rl, max_alts=alts, regime_sma_days=sma)
+                r = backtest_xs_momentum(series, params=p, start_ts=main_start)
+                _log_trial(f"v2_grid_{rs}_{rl}_{alts}_{sma}", r)
+                c1, c2, _ = _v2_pass_12(r)
+                grid.append({"ret": f"{rs}/{rl}", "alts": alts, "sma": sma, "cagr_pct": r["cagr_pct"], "sharpe": r["sharpe"],
+                             "max_drawdown_pct": r["max_drawdown_pct"], "pass12": c1 and c2, "c1": c1, "c2": c2})
+                print(f"  ret {rs:>2}/{rl:<2} alts {alts} sma {sma:>3}: CAGR {r['cagr_pct']:>6.1f}%  MDD {r['max_drawdown_pct']:>5.1f}%  Sharpe {r['sharpe']:>5.2f}  {'PASS' if c1 and c2 else ('fail-MDD' if not c1 else 'fail-return')}")
+
+    n_trials, var = _ledger_stats()
+    dsr = deflated_sharpe_ratio(main["_daily_returns"], n_trials=n_trials, sharpe_variance_across_trials=var)
+    print(f"\ntrial ledger (cumulative incl. v1): {n_trials} runs; DSR of v2 base (main) = {dsr if dsr is None else round(dsr, 3)}")
+
+    for label, res, res2, b in (("MAIN 2020-07→", main, stress[2], b3), ("LAST 2 YEARS", oos, None, b3_oos)):
+        print(f"\n=== v2 pass criteria — {label} ===")
+        for row in _v2_criteria(res, res2, grid if label.startswith("MAIN") else [], dsr if label.startswith("MAIN") else None, b):
+            print(f"  [{'PASS' if row['pass'] else 'FAIL'}] {row['n']}. {row['name']}: {row['detail']}")
+
+    out = Path(args.json) if args.json else Path("state/research_cache/xs_momentum_v2_result.json")
+    strip = lambda d: {k: v for k, v in d.items() if not k.startswith("_")}
+    out.write_text(json.dumps({"reference_full": strip(ref), "main": strip(main), "oos": strip(oos), "btc_regime_only": {"main": b3, "oos": b3_oos},
+                               "stress": {str(k): {kk: vv for kk, vv in strip(v).items() if kk not in ("equity_curve", "weekly")} for k, v in stress.items()},
+                               "grid": grid, "n_trials": n_trials, "dsr": dsr}, indent=1))
+    print(f"\nwrote {out}")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -309,9 +447,12 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--quick", action="store_true")
     r.add_argument("--json", default=None)
+    r.add_argument("--spec", choices=("v1", "v2"), default="v1")
     args = p.parse_args(argv)
     if args.cmd == "fetch":
         asyncio.run(cmd_fetch(args))
+    elif args.spec == "v2":
+        cmd_run_v2(args)
     else:
         cmd_run(args)
     return 0

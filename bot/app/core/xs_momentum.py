@@ -30,10 +30,17 @@ class XsMomentumParams:
     vol_window_days: int = 28
     top_n: int = 5
     max_weight: float = 0.25
-    target_vol: float = 0.25  # annualised
+    target_vol: float | None = 0.25  # annualised; None disables vol targeting
     regime_sma_days: int = 100
     rebalance_band: float = 0.20  # relative deviation that triggers a trade
     min_trade_usd: float = 25.0
+    # ---- v2 (spec strategy-spec-xs-momentum-v2) ----
+    btc_default: bool = False  # hold BTC with whatever is not allocated to alts
+    relative_to_btc: bool = False  # alts need momentum above BTC's to qualify
+    max_alts: int = 4
+    entry_rank: int = 5  # buy only if ranked within this
+    exit_rank: int = 10  # keep while ranked within this
+    alt_total_cap: float = 0.80  # alts together never exceed this (BTC keeps the rest)
 
     def warmup_days(self) -> int:
         return max(
@@ -183,7 +190,7 @@ def target_weights(
             w[k] += excess * (w[k] / share) if share > 0 else excess / len(under)
 
     # portfolio vol target (annualised), using the covariance of daily log returns
-    if returns and len(returns) == len(w) and all(len(returns[k]) >= 5 for k in w):
+    if params.target_vol is not None and returns and len(returns) == len(w) and all(len(returns[k]) >= 5 for k in w):
         keys = list(w)
         cov = _covariance([returns[k] for k in keys])
         var = 0.0
@@ -191,9 +198,68 @@ def target_weights(
             for b, kb in enumerate(keys):
                 var += w[ka] * w[kb] * cov[a][b]
         port_vol = math.sqrt(max(var, 0.0) * 365.0)
-        if port_vol > params.target_vol > 0:
+        if params.target_vol is not None and port_vol > params.target_vol > 0:
             scale = params.target_vol / port_vol
             w = {k: v * scale for k, v in w.items()}
+    return w
+
+
+def _v2_targets(
+    scored: list[tuple[float, str]],
+    vols: Mapping[str, float],
+    rets: Mapping[str, list[float]],
+    held_alts: Sequence[str],
+    series: Mapping[str, Series],
+    decision_t: int,
+    btc_inst: str,
+    params: XsMomentumParams,
+) -> dict[str, float]:
+    """BTC-default book with relative-momentum alt rotation and rank buffers (spec v2 §4)."""
+    need = params.ret_long_days + 1
+    btc_closes = _closes_upto(series[btc_inst], decision_t, need)
+    if btc_closes is None:
+        return {btc_inst: 1.0}
+    btc_mom = (btc_closes[-1] / btc_closes[-1 - params.ret_short_days] - 1.0 + btc_closes[-1] / btc_closes[-1 - params.ret_long_days] - 1.0) / 2.0
+
+    def rel_mom(inst: str) -> float | None:
+        closes = _closes_upto(series[inst], decision_t, need)
+        if closes is None:
+            return None
+        mom = (closes[-1] / closes[-1 - params.ret_short_days] - 1.0 + closes[-1] / closes[-1 - params.ret_long_days] - 1.0) / 2.0
+        return mom - btc_mom
+
+    # candidates: positive score (already filtered upstream), positive relative momentum, not BTC
+    ranked: list[str] = []
+    for _, inst in scored:
+        if inst == btc_inst:
+            continue
+        if params.relative_to_btc:
+            r = rel_mom(inst)
+            if r is None or r <= 0:
+                continue
+        ranked.append(inst)
+    rank = {inst: i + 1 for i, inst in enumerate(ranked)}
+
+    keep = [a for a in held_alts if a in rank and rank[a] <= params.exit_rank]
+    new = [a for a in ranked if a not in keep and rank[a] <= params.entry_rank]
+    alts = (keep + new)[: params.max_alts]
+    # if more kept than allowed, drop the worst-ranked
+    alts.sort(key=lambda a: rank[a])
+    alts = alts[: params.max_alts]
+
+    if not alts:
+        return {btc_inst: 1.0}
+    inv = {a: 1.0 / vols[a] for a in alts if vols.get(a, 0) > 0}
+    total = sum(inv.values())
+    w = {a: v / total * params.alt_total_cap for a, v in inv.items()}
+    for _ in range(len(w)):
+        over = {a: v - params.max_weight for a, v in w.items() if v > params.max_weight + 1e-12}
+        if not over:
+            break
+        for a in over:
+            w[a] = params.max_weight
+    alt_sum = sum(w.values())
+    w[btc_inst] = max(0.0, 1.0 - alt_sum)
     return w
 
 
@@ -317,6 +383,7 @@ def backtest_xs_momentum(
             on = regime_on(btc_closes or [], params.regime_sma_days)
             regime_log.append((t, on))
             universe = select_universe(series, decision_t, params)
+            held_alts = [k for k in holdings if k != btc_inst]
 
             target: dict[str, float] = {}
             if on and universe:
@@ -339,8 +406,11 @@ def backtest_xs_momentum(
                     win = closes[-params.vol_window_days - 1 :]
                     rets[inst] = [math.log(win[k] / win[k - 1]) for k in range(1, len(win))]
                 scored.sort(reverse=True)
-                picks = [inst for _, inst in scored[: params.top_n]]
-                target = target_weights({k: vols[k] for k in picks}, {k: rets[k] for k in picks}, params)
+                if params.btc_default:
+                    target = _v2_targets(scored, vols, rets, held_alts, series, decision_t, btc_inst, params)
+                else:
+                    picks = [inst for _, inst in scored[: params.top_n]]
+                    target = target_weights({k: vols[k] for k in picks}, {k: rets[k] for k in picks}, params)
 
             # ---- execute at today's open with band logic ----
             equity = _portfolio_value(cash, holdings, series, decision_t, last_px)
@@ -461,7 +531,8 @@ def backtest_xs_momentum(
         "entries": entries,
         "trade_count": len(trades),
         "fees_usd": sum(tr.fee for tr in trades),
-        "turnover_annual_pct": (turnover_notional / starting_cash / years * 100.0) if years > 0 else 0.0,
+        # traded notional relative to *average* equity, so a book that grows 7x is not reported as 7x busier
+        "turnover_annual_pct": (turnover_notional / (statistics.fmean(curve) if curve else starting_cash) / years * 100.0) if years > 0 else 0.0,
         "regime_off_pct": (sum(1 for _, on in regime_log if not on) / len(regime_log) * 100.0) if regime_log else 0.0,
         **{k: v for k, v in perf.items() if k != "daily_returns"},
         "equity_curve": [{"ts": ts, "equity": round(v, 2)} for ts, v in zip(curve_ts, curve)],

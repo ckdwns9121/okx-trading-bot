@@ -1,7 +1,7 @@
 # 크로스 섹션 모멘텀 v1 — 백테스트 결과: **불합격** (2026-10-04)
 
 스펙: `strategy-spec-xs-momentum-2026-10-04.md` (사전 등록, 결과 확인 후 수정하지 않음).
-재현: `cd bot && .venv/bin/python -m scripts.research_xs_momentum run`. 시도 장부 사본: `xs-momentum-v1-trials.jsonl` (33회).
+재현: `cd bot && .venv/bin/python -m scripts.research_xs_momentum run`. 시도 장부 사본: `xs-momentum-trials-cumulative.jsonl` (33회).
 
 ## 데이터
 
