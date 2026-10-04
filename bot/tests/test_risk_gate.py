@@ -64,6 +64,18 @@ def test_rejects_price_deviation(tmp_path: Path) -> None:
     assert any("price_deviation" in reason for reason in decision.rejection_reasons)
 
 
+def test_reduce_only_ignores_price_deviation(tmp_path: Path) -> None:
+    """Flattening must go through even when price already ran away from the decision price."""
+    gate = make_gate(tmp_path)
+    decision = gate.validate(
+        make_intent(side="sell", reference_price=100.0, execution_price=94.0, reduce_only=True),
+        AccountState(),
+    )
+    assert decision.allowed
+    deviation = next(check for check in decision.checks if check.name == "price_deviation")
+    assert deviation.passed and "reduce-only" in deviation.detail
+
+
 def test_rejects_when_instrument_limit_would_be_exceeded(tmp_path: Path) -> None:
     gate = make_gate(tmp_path)
     account = AccountState(

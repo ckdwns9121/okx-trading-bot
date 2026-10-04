@@ -1,32 +1,20 @@
 import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import TradingTab from "./settings/TradingTab";
-import BacktestTab from "./settings/BacktestTab";
 import ThemeTab from "./settings/ThemeTab";
 import LogsTab from "./settings/LogsTab";
 
-type TabKey = "trading" | "backtest" | "theme" | "logs";
+type TabKey = "trading" | "theme" | "logs";
 
 const TABS: { key: TabKey; label: string; desc: string; icon: ReactNode }[] = [
   {
     key: "trading",
     label: "거래 설정",
-    desc: "트레이더 상태 · 킬스위치 · 리스크 한도",
+    desc: "킬스위치 · 리스크 한도 · 연결 상태",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z" />
         <path d="M9 12l2 2 4-4" />
-      </svg>
-    ),
-  },
-  {
-    key: "backtest",
-    label: "백테스트",
-    desc: "전략을 과거 데이터로 검증",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 17l6-6 4 4 8-8" />
-        <path d="M14 7h7v7" />
       </svg>
     ),
   },
@@ -68,12 +56,10 @@ function SideNav({ value, onChange }: { value: TabKey; onChange: (k: TabKey) => 
                 onClick={() => onChange(t.key)}
                 aria-current={active ? "page" : undefined}
                 className={`w-full flex items-center gap-3 h-10 px-3 rounded-md text-left transition-colors ${
-                  active
-                    ? "bg-ink text-bg"
-                    : "text-ink-secondary hover:bg-surface-muted hover:text-ink"
+                  active ? "bg-ink text-bg" : "text-ink-secondary hover:bg-surface-muted hover:text-ink"
                 }`}
               >
-                <span className={`w-4.5 h-4.5 shrink-0 [&>svg]:w-[18px] [&>svg]:h-[18px] ${active ? "text-bg" : "text-ink-faint"}`}>
+                <span className={`shrink-0 [&>svg]:w-[18px] [&>svg]:h-[18px] ${active ? "text-bg" : "text-ink-faint"}`}>
                   {t.icon}
                 </span>
                 <span className="text-base font-semibold">{t.label}</span>
@@ -108,7 +94,6 @@ export default function ConfigPage() {
           <p className="text-sm text-ink-muted mt-1">{current.desc}</p>
         </div>
         {tab === "trading" && <TradingTab />}
-        {tab === "backtest" && <BacktestTab />}
         {tab === "theme" && <ThemeTab />}
         {tab === "logs" && <LogsTab />}
       </section>

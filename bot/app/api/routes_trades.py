@@ -119,7 +119,7 @@ class AccountBalanceResponse(BaseModel):
     summary="Query trades with optional filters",
 )
 async def list_trades(
-    source: Optional[Literal["live", "paper"]] = Query(default=None),
+    source: Optional[Literal["live", "paper", "demo"]] = Query(default=None),
     pair: Optional[str] = Query(default=None),
     strategy: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=1000),
@@ -156,7 +156,7 @@ async def list_trades(
     summary="Realized PnL summary for live trades",
 )
 async def get_pnl(
-    source: Literal["live", "paper"] = Query(default="live"),
+    source: Literal["live", "paper", "demo"] = Query(default="live"),
     db: AsyncSession = Depends(get_db),
 ) -> PnLResponse:
     # Only consider closed trades (status == "closed") with non-null pnl.

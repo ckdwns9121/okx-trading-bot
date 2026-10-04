@@ -1,4 +1,4 @@
-export type TradeSource = "live" | "paper";
+export type TradeSource = "demo" | "live" | "paper";
 
 export interface Trade {
   id: number;
@@ -82,102 +82,6 @@ export interface RiskStatus {
   limits: Record<string, number>;
   kill_switch_file: string;
   execution_log_file: string;
-}
-
-/* ---------------- demo trader ---------------- */
-
-export interface DemoTraderConfig {
-  strategy: "ma" | "donchian" | string;
-  pairs: string[];
-  allocation_usd: number;
-  leverage: number;
-  poll_seconds: number;
-  min_trade_usd: number;
-  ma_periods: number[];
-  donchian: {
-    entry_period: number;
-    exit_period: number;
-    atr_period: number;
-    atr_stop_mult: number | null;
-  };
-  mode: "demo" | "live" | string;
-}
-
-export interface DemoTrade {
-  inst_id: string;
-  side: "buy" | "sell" | string;
-  contracts: string;
-  price: number;
-  notional_usd: number;
-  fee_usd: number;
-  realized_pnl_usd: number | null;
-  decision_price: number;
-  target_fraction: number;
-  occurred_at: string;
-  cl_ord_id: string;
-}
-
-export interface DemoTraderStatus {
-  running: boolean;
-  status: "running" | "stale" | "not_started" | string;
-  message?: string;
-  strategy?: string | null;
-  started_at?: string | null;
-  last_loop_at?: string | null;
-  age_seconds?: number | null;
-  stale_after_seconds?: number;
-  config?: DemoTraderConfig | null;
-  pairs?: string[];
-  processed_candle_ts?: Record<string, string>;
-  positions?: Record<string, { contracts: string; avg_entry_price: number }>;
-  trade_count?: number;
-  realized_pnl_usd?: number;
-  fees_paid_usd?: number;
-  recent_trades?: DemoTrade[];
-}
-
-/* ---------------- backtest ---------------- */
-
-export interface BacktestRequest {
-  strategy: "donchian" | "ma";
-  pairs: string[];
-  days: number;
-  allocation_usd: number;
-  fee_pct: number;
-  min_trade_usd: number;
-  donchian: {
-    entry_period: number;
-    exit_period: number;
-    atr_period: number;
-    atr_stop_mult: number;
-  };
-  ma_periods: number[];
-}
-
-export interface EquityPoint {
-  ts: string;
-  equity: number;
-  buy_hold?: number;
-}
-
-export interface BacktestResult {
-  strategy: string;
-  params?: Record<string, unknown>;
-  instruments: string[];
-  days_tested: number;
-  starting_equity_usd: number;
-  final_equity_usd: number;
-  total_return_pct: number;
-  max_drawdown_pct: number;
-  trade_count: number;
-  win_rate_pct?: number;
-  fees_paid_usd: number;
-  buy_hold_return_pct: number;
-  buy_hold_max_drawdown_pct: number;
-  equity_curve: EquityPoint[];
-  request: BacktestRequest;
-  candles_from: string;
-  candles_to: string;
 }
 
 export interface MarketTicker {

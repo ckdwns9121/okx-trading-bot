@@ -1,8 +1,5 @@
 import type {
   AccountBalance,
-  BacktestRequest,
-  BacktestResult,
-  DemoTraderStatus,
   HealthStatus,
   KillSwitchState,
   MarketTicker,
@@ -93,17 +90,5 @@ export async function tripKillSwitch(reason: string): Promise<KillSwitchState> {
 export async function resetKillSwitch(): Promise<KillSwitchState> {
   return fetchJson<KillSwitchState>("/api/risk/kill-switch/reset", {
     method: "POST",
-  });
-}
-
-export async function getDemoTrader(): Promise<DemoTraderStatus> {
-  return fetchJson<DemoTraderStatus>("/api/paper/demo-trader");
-}
-
-/** 백테스트는 캔들을 받아오느라 수 초 걸린다. 호출 측에서 로딩 상태를 보여줄 것. */
-export async function runBacktest(req: BacktestRequest): Promise<BacktestResult> {
-  return fetchJson<BacktestResult>("/api/backtest/run", {
-    method: "POST",
-    body: JSON.stringify(req),
   });
 }

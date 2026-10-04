@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OKX crypto trading experiment rebuilt around a **safety-first** architecture. The previous
-strategy set was deleted after failing its own cost-adjusted validation; the current system
-runs a daily MA-ensemble trend-following strategy through a strict promotion gate:
-`backtest → paper/demo trading → (only then) small live capital`. There is intentionally
-NO live-trading executor in the codebase.
+OKX crypto trading experiment rebuilt around a **safety-first** architecture. The promotion
+gate is strict: `backtest → paper/demo trading → (only then) small live capital`.
+
+**As of 2026-10-04 there are no strategies and no trading runner in the codebase.** Every
+earlier strategy (Donchian breakout, MA ensemble, volatility breakout, BB+RSI) and the
+paper/demo traders were removed to start strategy research from scratch; the snapshot is
+preserved at git tag `archive/legacy-strategies-2026-10-04`. What remains is the
+infrastructure a new strategy must plug into: the risk layer, exchange clients, research
+data collectors, API, and the desktop/web UI. There is intentionally NO live-trading executor.
 
 ## Commands
 
@@ -19,24 +23,23 @@ docker compose up --build
 - Bot API: http://localhost:8000 (OpenAPI at /docs)
 - Dashboard: http://localhost:3000
 
+### Desktop app (Tauri + React, primary UI)
+```bash
+cd desktop && npm run tauri:dev     # dev window with HMR (needs the bot API on :8000)
+cd desktop && npx tsc --noEmit      # type check
+```
+Changing `tailwind.config.ts` requires restarting `tauri:dev`; Vite does not reload it.
+
 ### Bot tests (local venv at bot/.venv)
 ```bash
 cd bot && .venv/bin/python -m pytest
 ```
 Tests need no credentials or DB — `tests/conftest.py` injects dummy env vars.
 
-### Dashboard
+### Dashboard (Next.js, secondary UI)
 ```bash
 cd dashboard && npm run dev    # local dev
 cd dashboard && npm run build  # production build + type check
-```
-
-### Strategy runners (inside bot/ with .env loaded, or via docker compose exec)
-```bash
-python -m scripts.run_trend_following_paper_trader --backtest   # cost-aware backtest on real OKX data
-python -m scripts.run_trend_following_paper_trader              # internal paper loop (no orders sent)
-python -m scripts.run_trend_following_demo_trader --once        # one pass against OKX demo account
-python -m scripts.run_trend_following_demo_trader               # hourly demo loop (refuses unless OKX_MODE=demo)
 ```
 
 ### Database migrations
@@ -48,50 +51,39 @@ docker compose exec bot alembic upgrade head
 
 ### Safety layer (bot/app/core/) — every order must pass through this
 - **`risk_gate.py`** — `RiskGate.validate(OrderIntent, AccountState)` checks order notional,
-  price deviation, per-instrument/total exposure, daily loss (auto-trips kill switch), and
-  order rate. `KillSwitch` is a JSON-file-persisted switch (survives restarts, fails closed
-  on corrupt state; reduce-only orders are allowed while tripped).
+  price deviation (waived for reduce-only orders: flattening must never be refused),
+  per-instrument/total exposure, daily loss (auto-trips kill switch), and order rate.
+  `KillSwitch` is a JSON-file-persisted switch (survives restarts, fails closed on corrupt
+  state; reduce-only orders are allowed while tripped).
 - **`reconciliation.py`** — compares the bot's book against OKX positions; critical
   mismatches can trip the kill switch. Pure comparison + thin async runner.
 - **`execution_quality.py`** — TCA: records decision price vs fill price per order to a
   JSONL log; separates strategy decay from bad execution.
+- **`indicators.py`** — shared EMA/RSI/ATR/Bollinger helpers (pure, unit-tested) kept for
+  future strategies.
 
-### Strategies (bot/app/core/)
-All pure logic, look-ahead-free backtests (decision at close t, fill at open t+1, fees included):
-- **`trend_following.py`** — SMA ensemble signal (default 20/50/100d) → target exposure
-  fraction (votes/total, long/flat only), rebalance planning, paper book shared by all
-  strategy backtests.
-- **`donchian.py`** — Turtle-style channel breakout (55d entry / 20d exit / 2×ATR stop),
-  long/flat, all-in/all-out. Beat the MA ensemble on both 900d and 400d windows; currently
-  the demo trader's engine (`--strategy donchian`).
-- **`volatility_breakout.py`** — Larry Williams k·range on 1h bars (research; fee-bled in
-  backtest, not promoted). **`bband_rsi.py`** — BB+RSI mean reversion (refuted: -45%/900d).
-- **`indicators.py`** — shared EMA/RSI/ATR/Bollinger.
-- `scripts/run_strategy_backtests.py` compares all candidates on identical OKX data windows.
-
-### Runners (bot/scripts/)
-- `run_trend_following_paper_trader.py` — internal simulation on spot pairs; also hosts
-  shared helpers (candle pagination with confirmed-only filter, state persistence).
-- `run_trend_following_demo_trader.py` — real orders to OKX demo (SWAP, 1x, long/flat).
-  Auto-detects account position mode (net vs long/short → posSide handling). Exchange is
-  the source of truth for position size; reconciles every loop.
-- `collect_crowded_perp_snapshots.py`, `collect_basis_arbitrage_snapshots.py` — research
-  data collectors (kept independent of any strategy).
+### Research data (bot/scripts/)
+- `collect_crowded_perp_snapshots.py`, `collect_basis_arbitrage_snapshots.py` — public-data
+  collectors writing to `perp_market_snapshots` / `basis_arbitrage_snapshots`. Independent
+  of any strategy. Existing data: one week of perp snapshots (2026-05-21..27, 42 instruments)
+  and one day of basis snapshots — not enough for funding-carry conclusions yet.
 
 ### API (bot/app/api/)
 - `routes_risk.py` — `/api/risk/status`, kill-switch trip/reset, reconciliation, TCA summary
-- `routes_paper.py` — `/api/paper/trend-following` (paper book state)
 - `routes_trading.py` — runtime logs (`/api/trading/logs`), health, Telegram test
-- `routes_trades.py`, `routes_markets.py` — trades/positions/markets
+- `routes_trades.py` — trades/pnl/orders/positions (sources: `live`, `paper`, `demo`)
+- `routes_markets.py` — top-100 USDT-SWAP tickers with OKX coin icons
 
 ### Exchange layer (bot/app/exchange/)
 - `okx_client.py` — authenticated OKX v5 REST (HMAC, rate limiting, demo/live header)
 - `public_market_data.py` — credential-free public endpoints (candles, tickers, funding,
-  instruments) used by research collectors and strategy runners
+  instruments) for collectors and future backtests
 
-### Dashboard (dashboard/src/)
-- `app/config/page.tsx` — risk card (kill-switch status + emergency stop button), runtime
-  logs, health. `lib/api.ts` / `lib/types.ts` hold the typed API client.
+### Desktop (desktop/src/) — Toss-Securities-style design system
+- `styles/globals.css` holds every color as a CSS token; `:root[data-theme="dark"]` flips the
+  theme. `lib/theme.tsx` persists system/light/dark. Price direction follows the KR
+  convention: up = red, down = blue. `components/ui.tsx` is the shared kit.
+- Pages: Home, Markets, Trades, Settings (left side menu: trading / theme / logs).
 
 ## Conventions
 
@@ -99,8 +91,11 @@ All pure logic, look-ahead-free backtests (decision at close t, fill at open t+1
   validate intents through `RiskGate`, record fills in `ExecutionQualityLog`, and reconcile
   against the exchange.
 - Strategy modules must stay pure (no I/O) so they are unit-testable; runners do I/O.
-- State files live under `bot/state/` (gitignored): kill switch, TCA log, trader state.
-- Demo runner must refuse to start when `OKX_MODE != demo`. Promotion to live is a human
+- A new strategy ships with: a look-ahead-free, fee-aware backtest (decision at close t,
+  fill at open t+1), a buy-and-hold benchmark on the same window, and pass criteria written
+  down *before* the first paper run.
+- State files live under `bot/state/` (gitignored): kill switch, TCA log.
+- Any demo runner must refuse to start when `OKX_MODE != demo`. Promotion to live is a human
   decision backed by paper/demo evidence, not a config flip.
 - Research context: `docs/research/trading-bot-feature-landscape-2026.md` documents the
   feature landscape survey and gap analysis that drove this architecture.

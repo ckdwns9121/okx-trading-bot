@@ -27,18 +27,9 @@ services:
       - botstate:/app/state
     restart: always
 
-  demo-trader:
-    build: ./bot
-    command: python -m scripts.run_trend_following_demo_trader --strategy donchian --allocation-usd 10000 --leverage 10
-    depends_on:
-      postgres:
-        condition: service_healthy
-      bot:
-        condition: service_started
-    env_file: .env
-    volumes:
-      - botstate:/app/state
-    restart: always
+  # No trading service is defined on purpose. Strategies were removed on
+  # 2026-10-04 (see git tag archive/legacy-strategies-2026-10-04); a new
+  # trader is added here only after it passes backtest → paper → demo gates.
 
   dashboard:
     build: ./dashboard

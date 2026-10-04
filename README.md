@@ -83,58 +83,38 @@ curl http://127.0.0.1:8000/api/risk/execution-quality
 
 ---
 
-## 4) 전략: Donchian Breakout / Daily MA Trend Following (BTC/ETH)
+## 4) 전략: 현재 없음 (2026-10-04 전면 제거)
 
-데모 트레이더는 두 가지 시그널 엔진을 지원합니다 (`--strategy`).
+기존 전략(Donchian 채널 돌파, MA 앙상블, 변동성 돌파, BB+RSI 역추세)과 페이퍼/데모
+트레이더, 백테스트 하네스는 **모두 코드에서 제거**했습니다. 새 전략을 처음부터 연구하기
+위해서이며, 제거 직전 스냅샷은 git 태그 `archive/legacy-strategies-2026-10-04`에 있습니다.
 
-- **`donchian` (현재 데모 운용 중)** — 터틀식 채널 돌파. 종가가 직전 55일 고점을
-  돌파하면 진입, 직전 20일 저점 이탈 또는 진입가 대비 2×ATR(20) 하락 시 청산.
-  롱/플랫 전용. 900일 백테스트 +24.1%(maxDD 15.8%) / 400일 약세장 -9.1%(maxDD 9.1%)로
-  MA 앙상블 대비 두 창 모두 우위, 이웃 파라미터(40~65)도 전부 수익으로 강건성 확인.
-- **`ma`** — 20/50/100일 이동평균 앙상블. 종가가 3개 MA 중 몇 개 위에 있는지로
-  목표 비중(0/33/67/100%)을 정합니다.
+남아 있는 것은 새 전략이 반드시 거쳐야 하는 인프라입니다.
 
-후보 전략 비교는 `python -m scripts.run_strategy_backtests --days 900`으로 재현 가능
-(Donchian, 변동성 돌파, BbandRsi 평균회귀를 동일 조건으로 비교. BbandRsi는 900일
--45%로 기각, 변동성 돌파는 수수료 잠식으로 보류).
+- 안전장치: 리스크 게이트 · 킬스위치 · 거래소 대사 · 체결 품질(TCA)
+- 거래소 연동: 인증 REST 클라이언트, 공개 시세/캔들/펀딩 클라이언트
+- 연구 데이터 수집기: 무기한 선물 스냅샷, 현물-선물 베이시스 스냅샷
+- API + 데스크탑/웹 UI (마켓, 거래 내역, 설정)
 
-전략 수명주기(승격 게이트): `백테스트 → 페이퍼/데모 → 소액 실거래 → 증액`.
-각 단계는 이전 단계 통과 근거가 있어야 넘어갑니다.
+새 전략은 다음 순서로만 들어옵니다.
 
-### 4-1. 백테스트 (실데이터, 수수료 반영, 룩어헤드 차단)
-
-```bash
-docker compose exec bot python -m scripts.run_trend_following_paper_trader --backtest --backtest-days 900
+```text
+백테스트(실데이터 · 수수료 반영 · 룩어헤드 차단 · 매수보유 벤치마크)
+  → 통과 기준을 먼저 문서화
+  → 페이퍼/데모 (OKX_MODE=demo 강제, 리스크 게이트 통과 필수)
+  → 소액 실거래 → 증액
 ```
 
-### 4-2. 내장 페이퍼 트레이딩 (주문 전송 없음, 현물 시뮬레이션)
+전략 모듈은 I/O 없는 순수 함수로 작성해 단위 테스트가 가능해야 하고, 주문을 내는 러너는
+`RiskGate` 검증 · `ExecutionQualityLog` 기록 · 거래소 대사를 생략할 수 없습니다.
 
-```bash
-docker compose exec -d bot python -m scripts.run_trend_following_paper_trader
-curl http://127.0.0.1:8000/api/paper/trend-following   # 가상 장부 조회
-```
-
-### 4-3. OKX 데모 트레이딩 (데모 계좌에 실제 주문, 무기한 1x)
-
-```bash
-# 1회 평가 (스모크 테스트)
-docker compose exec bot python -m scripts.run_trend_following_demo_trader --once
-
-# 상시 루프 (매시간 체크, 새 일봉 확정 시에만 판단)
-docker compose exec -d bot python -m scripts.run_trend_following_demo_trader
-```
-
-- 계정 포지션 모드(net / long·short)를 자동 감지합니다.
-- `OKX_MODE=demo`가 아니면 실행을 거부합니다.
-
-### 4-4. 관찰
+### 4-1. 관찰
 
 ```bash
 curl http://127.0.0.1:8000/api/trading/logs    # 신호/체결/오류 이벤트
 curl http://127.0.0.1:8000/api/health          # API/DB/OKX 연결 상태
+curl http://127.0.0.1:8000/api/risk/status     # 킬스위치 · 리스크 한도
 ```
-
----
 
 ## 5) 시장 데이터 수집 (리서치용)
 

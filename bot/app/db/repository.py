@@ -74,6 +74,25 @@ async def create_trade(session: AsyncSession, data: dict[str, Any]) -> Trade:
     return trade
 
 
+async def get_open_trade(session: AsyncSession, *, pair: str, source: str) -> Optional[Trade]:
+    """Return the single open trade for a pair/source (long/flat books have at most one)."""
+    result = await session.execute(
+        select(Trade)
+        .where(Trade.pair == pair, Trade.source == source, Trade.status == "open")
+        .order_by(Trade.entry_time.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_trade(session: AsyncSession, trade_id: int, data: dict[str, Any]) -> Optional[Trade]:
+    """Update a trade by primary key. Returns the updated Trade or None."""
+    await session.execute(update(Trade).where(Trade.id == trade_id).values(**data))
+    await session.flush()
+    result = await session.execute(select(Trade).where(Trade.id == trade_id))
+    return result.scalar_one_or_none()
+
+
 # ------------------------------------------------------------------ #
 # Order operations                                                     #
 # ------------------------------------------------------------------ #

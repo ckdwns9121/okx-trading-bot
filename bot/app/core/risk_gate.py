@@ -234,6 +234,11 @@ class RiskGate:
         return RiskCheck(name="max_order_notional", passed=True, detail="within limit")
 
     def _check_price_deviation(self, intent: OrderIntent) -> RiskCheck:
+        # Flattening is the safe reaction to a fast market; a reduce-only order
+        # must never be refused because price already moved. Same rationale as
+        # letting reduce-only orders through a tripped kill switch.
+        if intent.reduce_only:
+            return RiskCheck(name="price_deviation", passed=True, detail="reduce-only order")
         deviation_pct = abs((intent.execution_price / intent.reference_price) - 1.0) * 100.0
         limit = self._limits.max_price_deviation_pct
         if deviation_pct > limit:
