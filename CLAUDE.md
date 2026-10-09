@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 OKX crypto trading experiment rebuilt around a **safety-first** architecture. The promotion
 gate is strict: `backtest → paper/demo trading → (only then) small live capital`.
 
-**As of 2026-10-04 there are no strategies and no trading runner in the codebase.** Every
-earlier strategy (Donchian breakout, MA ensemble, volatility breakout, BB+RSI) and the
-paper/demo traders were removed to start strategy research from scratch; the snapshot is
-preserved at git tag `archive/legacy-strategies-2026-10-04`. What remains is the
-infrastructure a new strategy must plug into: the risk layer, exchange clients, research
-data collectors, API, and the desktop/web UI. There is intentionally NO live-trading executor.
+Legacy strategies were removed on 2026-10-04 (git tag `archive/legacy-strategies-2026-10-04`)
+and research restarted with pre-registered specs (`docs/research/strategy-spec-*.md`, cumulative
+trial ledger `docs/research/xs-momentum-trials-cumulative.jsonl`). Cross-sectional alt momentum
+(v1, v2) failed; Donchian breakout on BTC/ETH/SOL/XRP (v3, v4 ATR-sized) passed 6/7 criteria.
+**Since 2026-10-09 the `donchian-trader` compose service runs v4 on the OKX DEMO account**
+(spot, no leverage, 4 × $1,000 sleeves). There is intentionally NO live-trading executor.
 
 ## Commands
 
@@ -61,6 +61,17 @@ docker compose exec bot alembic upgrade head
   JSONL log; separates strategy decay from bad execution.
 - **`indicators.py`** — shared EMA/RSI/ATR/Bollinger helpers (pure, unit-tested) kept for
   future strategies.
+
+### Donchian demo trader
+- `app/core/donchian_majors.py` — pure Donchian signal, ATR position sizing, sleeve backtest.
+- `app/core/donchian_trader.py` — pure live logic: decide on the last confirmed UTC bar,
+  deterministic `clOrdId` per (inst, bar, side), freshness check, reconcile bot-owned coins vs
+  balances minus the pre-bot baseline (demo accounts come pre-funded), fill bookkeeping.
+- `scripts/run_donchian_trader.py` — loop: settle pending orders by clOrdId → reconcile
+  (shortfall trips kill switch) → per sleeve once per new bar: signal → RiskGate → record
+  pending → send once (`max_attempts=1`, never resent) → confirm by query → mark bar handled.
+  State: `bot/state/donchian_trader.json`. Status API: `/api/trader/donchian`.
+- `scripts/research_donchian_majors.py [--spec v4]` reproduces the backtests.
 
 ### Research data (bot/scripts/)
 - `collect_crowded_perp_snapshots.py`, `collect_basis_arbitrage_snapshots.py` — public-data

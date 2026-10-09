@@ -3,6 +3,7 @@ import { getHealth, getRiskStatus, resetKillSwitch, tripKillSwitch } from "@/lib
 import type { HealthStatus, RiskStatus } from "@/lib/types";
 import { fmtDateTime, fmtInt } from "@/lib/format";
 import { Badge, Button, Card, Empty, Notice, StatusDot } from "@/components/ui";
+import TraderCard from "./TraderCard";
 
 const LIMIT_LABELS: Record<string, { label: string; unit: string }> = {
   max_order_notional_usd: { label: "주문당 최대 금액", unit: "USD" },
@@ -70,9 +71,7 @@ export default function TradingTab() {
         </Notice>
       )}
 
-      <Notice tone="blue" title="지금은 돌아가는 전략이 없어요">
-        기존 전략은 2026-10-04에 모두 제거했습니다. 새 전략은 백테스트 → 페이퍼 → 데모 검증을 통과한 뒤에만 여기에 연결됩니다.
-      </Notice>
+      <TraderCard tripped={tripped} />
 
       <Card
         title="킬스위치"

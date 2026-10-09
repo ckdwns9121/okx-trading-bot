@@ -84,6 +84,46 @@ export interface RiskStatus {
   execution_log_file: string;
 }
 
+export interface TraderSleeve {
+  inst: string;
+  cash_usd: number;
+  qty: number;
+  entry_px: number | null;
+  entry_ts: number | null;
+  realized_pnl_usd: number;
+}
+
+export interface TraderTrade {
+  inst: string;
+  side: "buy" | "sell" | string;
+  reason: string;
+  bar_ts: number;
+  fill_ts: number;
+  decision_close: number;
+  avg_px: number;
+  base_qty: number;
+  quote_usd: number;
+  fee_usd: number;
+  realized_pnl_usd: number | null;
+}
+
+export interface DonchianTraderStatus {
+  status: "running" | "stale" | "not_started" | string;
+  strategy?: string;
+  started_at?: string;
+  last_loop_at?: string;
+  age_seconds?: number | null;
+  config?: { pairs: string[]; capital_usd: number; poll_seconds: number; mode: string; params: Record<string, unknown> };
+  sleeves?: Record<string, TraderSleeve>;
+  handled_bar?: Record<string, number>;
+  pending_orders?: number;
+  trade_count?: number;
+  realized_pnl_usd?: number;
+  fees_usd?: number;
+  recent_trades?: TraderTrade[];
+  equity_history?: { day: string; equity_usd: number }[];
+}
+
 export interface MarketTicker {
   pair: string;
   symbol: string;

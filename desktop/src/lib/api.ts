@@ -1,5 +1,6 @@
 import type {
   AccountBalance,
+  DonchianTraderStatus,
   HealthStatus,
   KillSwitchState,
   MarketTicker,
@@ -91,4 +92,8 @@ export async function resetKillSwitch(): Promise<KillSwitchState> {
   return fetchJson<KillSwitchState>("/api/risk/kill-switch/reset", {
     method: "POST",
   });
+}
+
+export async function getDonchianTrader(): Promise<DonchianTraderStatus> {
+  return fetchJson<DonchianTraderStatus>("/api/trader/donchian");
 }

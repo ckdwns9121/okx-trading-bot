@@ -27,9 +27,21 @@ services:
       - botstate:/app/state
     restart: always
 
-  # No trading service is defined on purpose. Strategies were removed on
-  # 2026-10-04 (see git tag archive/legacy-strategies-2026-10-04); a new
-  # trader is added here only after it passes backtest → paper → demo gates.
+  # OKX DEMO trader (refuses OKX_MODE != demo). Evidence and limits:
+  # docs/research/donchian-majors-v3/v4-result-2026-10-09.md. Spot, no leverage,
+  # 4 sleeves × $1,000, ATR-sized entries, once per confirmed UTC daily bar.
+  donchian-trader:
+    build: ./bot
+    command: python -m scripts.run_donchian_trader --capital-usd 4000 --risk-pct 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bot:
+        condition: service_started
+    env_file: .env
+    volumes:
+      - botstate:/app/state
+    restart: always
 
   dashboard:
     build: ./dashboard

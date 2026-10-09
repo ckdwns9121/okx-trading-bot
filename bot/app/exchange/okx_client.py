@@ -137,8 +137,14 @@ class OKXClient:
         path: str,
         params: Optional[dict[str, Any]] = None,
         data: Optional[dict[str, Any]] = None,
+        max_attempts: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Execute an authenticated API request with rate limiting."""
+        """Execute an authenticated API request with rate limiting.
+
+        ``max_attempts=1`` disables retries. Order placement must use it: a
+        timed-out POST may already have been accepted, and resending it would
+        double the order. Callers confirm by querying the clOrdId instead.
+        """
         import json
 
         body_str = json.dumps(data) if data else ""
@@ -154,7 +160,8 @@ class OKXClient:
         log = logger.bind(method=method, path=path)
 
         last_response: httpx.Response | None = None
-        for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+        attempts = max_attempts if max_attempts is not None else _MAX_REQUEST_ATTEMPTS
+        for attempt in range(1, attempts + 1):
             await self._rate_limiter.acquire()
             headers = self._build_headers(method, sign_path, body_str)
             try:
@@ -166,7 +173,7 @@ class OKXClient:
                     )
             except httpx.TransportError as exc:
                 log.error("http_transport_error", error=str(exc), attempt=attempt)
-                if attempt < _MAX_REQUEST_ATTEMPTS:
+                if attempt < attempts:
                     await asyncio.sleep(0.5 * attempt)
                     continue
                 raise
@@ -184,7 +191,7 @@ class OKXClient:
                         body=response.text[:500],
                         attempt=attempt,
                     )
-                    if attempt < _MAX_REQUEST_ATTEMPTS:
+                    if attempt < attempts:
                         await asyncio.sleep(0.5 * attempt)
                         continue
                 log.error(
@@ -208,7 +215,7 @@ class OKXClient:
                         detail=detail,
                         attempt=attempt,
                     )
-                    if attempt < _MAX_REQUEST_ATTEMPTS:
+                    if attempt < attempts:
                         await asyncio.sleep(0.5 * attempt)
                         continue
                 log.error("api_error", code=code, msg=msg, detail=detail)
@@ -219,7 +226,7 @@ class OKXClient:
 
         if last_response is not None:
             last_response.raise_for_status()
-        raise RuntimeError(f"OKX request failed after {_MAX_REQUEST_ATTEMPTS} attempts: {method} {path}")
+        raise RuntimeError(f"OKX request failed after {attempts} attempts: {method} {path}")
 
     # ------------------------------------------------------------------ #
     # Market data                                                          #
@@ -403,3 +410,58 @@ class OKXClient:
         if not data:
             raise RuntimeError(f"No order found for clOrdId={cl_ord_id!r}")
         return data[0]
+
+
+    # ------------------------------------------------------------------ #
+    # Spot                                                                 #
+    # ------------------------------------------------------------------ #
+
+    async def place_spot_market_order(
+        self,
+        *,
+        inst_id: str,
+        side: str,
+        size: str,
+        cl_ord_id: str,
+        size_in_quote: bool,
+    ) -> dict[str, Any]:
+        """Spot market order in cash mode. Sent exactly once (no retries).
+
+        ``size_in_quote=True`` means ``size`` is USDT to spend (market buy);
+        otherwise it is the base-currency quantity (market sell).
+        """
+        data: dict[str, Any] = {
+            "instId": inst_id,
+            "tdMode": "cash",
+            "side": side,
+            "ordType": "market",
+            "sz": size,
+            "clOrdId": cl_ord_id,
+            "tgtCcy": "quote_ccy" if size_in_quote else "base_ccy",
+        }
+        result = await self._request("POST", "/api/v5/trade/order", data=data, max_attempts=1)
+        logger.info("spot_order_placed", inst_id=inst_id, side=side, size=size, cl_ord_id=cl_ord_id)
+        return result
+
+    async def find_order(self, *, inst_id: str, cl_ord_id: str) -> Optional[dict[str, Any]]:
+        """Order by clOrdId, or None when OKX does not know it (never sent / rejected)."""
+        try:
+            result = await self._request("GET", "/api/v5/trade/order", params={"instId": inst_id, "clOrdId": cl_ord_id})
+        except RuntimeError as exc:
+            if "51603" in str(exc):  # order does not exist
+                return None
+            raise
+        rows: list[dict[str, Any]] = result.get("data", [])
+        return rows[0] if rows else None
+
+    async def get_balances(self) -> dict[str, float]:
+        """Total equity per currency (spot holdings + cash), e.g. {"BTC": 1.0, "USDT": 6034.7}."""
+        result = await self.get_account_balance()
+        row = (result.get("data") or [{}])[0]
+        out: dict[str, float] = {}
+        for d in row.get("details", []):
+            try:
+                out[str(d.get("ccy"))] = float(d.get("eq") or d.get("cashBal") or 0.0)
+            except (TypeError, ValueError):
+                continue
+        return out
