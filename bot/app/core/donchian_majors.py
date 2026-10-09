@@ -36,6 +36,7 @@ class DonchianParams:
     atr_days: int = 20
     atr_stop: float | None = 2.0
     sma_exit_days: int | None = None  # variant ③: also exit when close < SMA(n)
+    risk_pct: float | None = None  # v4: size so a hit on the ATR stop loses ~risk_pct of the sleeve
 
     def warmup(self) -> int:
         return max(self.entry_days, self.exit_days, self.atr_days, self.sma_exit_days or 0) + 1
@@ -89,6 +90,14 @@ def sma_signal(b: Bars, i: int, in_pos: bool, p: SmaParams) -> str:
     return "hold"
 
 
+def position_fraction(close: float, atr_value: float | None, p: DonchianParams) -> float:
+    """Share of the sleeve to invest on entry. 1.0 = all-in (v3); with risk_pct, turtle-style sizing (v4)."""
+    if p.risk_pct is None or atr_value is None or atr_value <= 0 or close <= 0:
+        return 1.0
+    stop_mult = p.atr_stop if p.atr_stop is not None else 2.0
+    return max(0.0, min(1.0, (p.risk_pct / 100.0) / (stop_mult * atr_value / close)))
+
+
 # --------------------------------------------------------------------------- #
 # Sleeve simulation
 # --------------------------------------------------------------------------- #
@@ -103,6 +112,7 @@ def run_sleeve(b: Bars, *, rule: str, params: DonchianParams | SmaParams, start_
     entry_px = entry_atr = None
     trades: list[Trade] = []
     pending: str | None = None
+    pending_frac = 1.0
     equity: dict[int, float] = {}
     for i, t in enumerate(b.ts):
         if end_ts is not None and t > end_ts:
@@ -112,12 +122,13 @@ def run_sleeve(b: Bars, *, rule: str, params: DonchianParams | SmaParams, start_
         if pending and live:
             px = b.open[i]
             if pending == "enter" and qty == 0.0:
-                qty = cash * (1 - fee) / px
-                cash = 0.0
+                invest = cash * pending_frac
+                qty = invest * (1 - fee) / px
+                cash -= invest
                 entry_px = px
                 trades.append(Trade(b.inst, t, px, None, None, None, None))
             elif pending.startswith("exit") and qty > 0.0:
-                cash = qty * px * (1 - fee)
+                cash += qty * px * (1 - fee)
                 qty = 0.0
                 tr = trades[-1]
                 tr.exit_ts, tr.exit_px, tr.reason = t, px, pending.split(":", 1)[1]
@@ -130,6 +141,7 @@ def run_sleeve(b: Bars, *, rule: str, params: DonchianParams | SmaParams, start_
             sig = donchian_signal(b, i, in_pos, entry_px, entry_atr, atr, params)
             if sig == "enter":
                 entry_atr = atr[i]
+                pending_frac = position_fraction(b.close[i], entry_atr, params)
         else:
             sig = sma_signal(b, i, in_pos, params)
         if live and sig != "hold":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from app.core.donchian_majors import Bars, DonchianParams, SmaParams, backtest_portfolio, run_sleeve
 
 DAY = 86_400_000
@@ -58,3 +60,23 @@ def test_fees_reduce_results() -> None:
     free = backtest_portfolio(b, rule="donchian", params=DonchianParams(55, 20, 20, None), start_ts=T0, fee_pct=0.0)
     paid = backtest_portfolio(b, rule="donchian", params=DonchianParams(55, 20, 20, None), start_ts=T0, fee_pct=0.3)
     assert paid["final_equity_usd"] < free["final_equity_usd"]
+
+
+def test_position_fraction_scales_with_volatility() -> None:
+    from app.core.donchian_majors import position_fraction
+
+    p = DonchianParams(risk_pct=5.0, atr_stop=2.0)
+    assert position_fraction(100.0, 3.0, p) == pytest.approx(0.05 / 0.06)  # 2×3% stop → 83%
+    assert position_fraction(100.0, 6.0, p) == pytest.approx(0.05 / 0.12)  # 2×6% stop → 42%
+    assert position_fraction(100.0, 1.0, p) == 1.0  # capped, never levered
+    assert position_fraction(100.0, 3.0, DonchianParams()) == 1.0  # v3 behaviour unchanged
+
+
+def test_sized_entry_keeps_cash_and_lowers_drawdown() -> None:
+    closes = [100.0 + (1.5 if k % 2 else -1.5) for k in range(60)] + [100 + 3 * k for k in range(1, 31)] + [190 - 6 * k for k in range(1, 20)]
+    b = {"X-USDT": bars(closes)}
+    full = backtest_portfolio(b, rule="donchian", params=DonchianParams(55, 20, 20, 2.0), start_ts=T0, fee_pct=0.0)
+    sized = backtest_portfolio(b, rule="donchian", params=DonchianParams(55, 20, 20, 2.0, risk_pct=1.0), start_ts=T0, fee_pct=0.0)
+    assert sized["round_trips"] == full["round_trips"] == 1
+    assert sized["max_drawdown_pct"] < full["max_drawdown_pct"]
+    assert sized["final_equity_usd"] < full["final_equity_usd"]  # smaller bet on a winning trade

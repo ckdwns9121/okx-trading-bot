@@ -49,8 +49,12 @@ def row(label: str, r: dict[str, Any]) -> str:
 
 
 def main() -> None:
+    import sys
+    spec = 'v4' if '--spec' in sys.argv and sys.argv[sys.argv.index('--spec') + 1] == 'v4' else 'v3'
+    risk = 5.0 if spec == 'v4' else None
+    print(f'spec {spec}' + (f' — ATR position sizing, risk {risk}% of sleeve per trade' if risk else ''))
     bars = {i: load(i) for i in INSTS}
-    base = DonchianParams()
+    base = DonchianParams(risk_pct=risk)
     variants = {
         "① buy & hold": ("hold", None),
         "② SMA100 filter": ("sma", SmaParams(100)),
@@ -64,7 +68,7 @@ def main() -> None:
         for label, (rule, p) in variants.items():
             r = backtest_portfolio(bars, rule=rule, params=p, start_ts=start)
             if rule != "hold":
-                log_trial(f"v3_{rule}_{'sma' if (p and getattr(p, 'sma_exit_days', None)) else 'base'}_{period[:4]}", r)
+                log_trial(f"{spec}_{rule}_{'sma' if (p and getattr(p, 'sma_exit_days', None)) else 'base'}_{period[:4]}", r)
             results[period][label] = r
             print(row(label, r))
         d = results[period]["DONCHIAN 55/20/ATR2"]
@@ -90,7 +94,7 @@ def main() -> None:
 
     print("\ncost stress 0.30%/side (main):")
     stress = backtest_portfolio(bars, rule="donchian", params=base, start_ts=MAIN_START, fee_pct=0.30)
-    log_trial("v3_donchian_cost_x2", stress)
+    log_trial(f"{spec}_donchian_cost_x2", stress)
     print(row("Donchian @0.30%", stress))
 
     print("\nneighbour grid (27, main):")
@@ -98,11 +102,27 @@ def main() -> None:
     for e in (40, 55, 70):
         for x in (15, 20, 25):
             for a in (1.5, 2.0, 2.5):
-                r = backtest_portfolio(bars, rule="donchian", params=DonchianParams(e, x, 20, a), start_ts=MAIN_START)
-                log_trial(f"v3_grid_{e}_{x}_{a}", r)
+                r = backtest_portfolio(bars, rule="donchian", params=DonchianParams(e, x, 20, a, risk_pct=risk), start_ts=MAIN_START)
+                log_trial(f"{spec}_grid_{e}_{x}_{a}", r)
                 ok = r["max_drawdown_pct"] <= 0.6 * main_h["max_drawdown_pct"] and r["sharpe"] >= main_h["sharpe"]
                 grid.append(ok)
                 print(f"  entry {e} exit {x} atr {a}: CAGR {r['cagr_pct']:>6.1f}%  MDD {r['max_drawdown_pct']:>5.1f}%  Sharpe {r['sharpe']:>5.2f}  trips {r['round_trips']:>3}  {'PASS' if ok else 'fail'}")
+
+    if spec == "v4":
+        print("\nrisk-budget sensitivity (reported, not judged):")
+        for rk in (3.0, 7.0):
+            for per, st in (("main", MAIN_START), ("2y", OOS_START)):
+                r = backtest_portfolio(bars, rule="donchian", params=replace(base, risk_pct=rk), start_ts=st)
+                log_trial(f"v4_risk{rk:g}_{per}", r)
+                print(row(f"risk {rk:g}% ({per})", r))
+        avg_frac = []
+        from app.core.donchian_majors import position_fraction
+        from app.core.indicators import atr_wilder
+        for inst, b in bars.items():
+            a = atr_wilder(b.high, b.low, b.close, 20)
+            fr = [position_fraction(b.close[k], a[k], base) for k in range(len(b.ts)) if a[k] and b.ts[k] >= MAIN_START]
+            avg_frac.append((inst, statistics.fmean(fr)))
+        print("  average entry fraction if signalled: " + ", ".join(f"{i.split('-')[0]} {f*100:.0f}%" for i, f in avg_frac))
 
     sharpes = [json.loads(l)["sharpe"] for l in LEDGER.read_text().splitlines() if l.strip()]
     n_trials = len(sharpes)
@@ -117,11 +137,11 @@ def main() -> None:
     c.append((5, "≥80% of 27 neighbours pass 1·2", sum(grid) >= 22, f"{sum(grid)}/27"))
     c.append((6, "last 2y: MDD ≤ 60% of hold and CAGR > 0", oos_d["max_drawdown_pct"] <= 0.6 * oos_h["max_drawdown_pct"] and oos_d["cagr_pct"] > 0, f"MDD {oos_d['max_drawdown_pct']:.1f}% vs limit {0.6*oos_h['max_drawdown_pct']:.1f}%, CAGR {oos_d['cagr_pct']:.1f}%"))
     c.append((7, "DSR ≥ 0.90 (cumulative trials)", (dsr or 0) >= 0.90, f"DSR {dsr:.3f} over {n_trials} trials" if dsr is not None else "n/a"))
-    print("\n=== pass criteria (spec v3) ===")
+    print(f"\n=== pass criteria (spec {spec}) ===")
     for n, name, ok, detail in c:
         print(f"  [{'PASS' if ok else 'FAIL'}] {n}. {name}: {detail}")
 
-    out = Path("state/research_cache/donchian_majors_result.json")
+    out = Path(f"state/research_cache/donchian_majors_{spec}_result.json")
     strip = lambda r: {k: v for k, v in r.items() if not k.startswith("_")}
     out.write_text(json.dumps({p: {k: strip(v) for k, v in d.items()} for p, d in results.items()} | {"grid_pass": sum(grid), "dsr": dsr, "n_trials": n_trials}, default=str))
     print(f"\nwrote {out}")
