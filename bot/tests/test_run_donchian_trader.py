@@ -186,3 +186,41 @@ async def test_refuses_live_mode(monkeypatch: pytest.MonkeyPatch, env: Path) -> 
     monkeypatch.setattr(settings, "OKX_MODE", "live")
     with pytest.raises(SystemExit):
         await rt.run(argparse.Namespace(once=True))
+
+
+class FlakyClient(FakeClient):
+    async def get_balances(self) -> dict[str, float]:
+        raise ConnectionError("dns down")
+
+
+class DownMarket(FakeMarket):
+    async def get_instruments(self, *, inst_type: str, inst_id: str) -> list[dict[str, Any]]:
+        raise ConnectionError("dns down")
+
+
+@pytest.mark.asyncio
+async def test_failed_start_never_overwrites_state(env: Path) -> None:
+    """Regression (2026-10-10): a network error during start() made close() persist an empty book."""
+    market = FakeMarket({"SOL-USDT": BREAKOUT, "XRP-USDT": FLAT})
+    t = make_trader(env, market, FakeClient({"USDT": 6000.0}))
+    await t.start()
+    await t.run_once()
+    await t.close()
+    good = (env / "state.json").read_text()
+
+    for m, c in ((market, FlakyClient({"USDT": 6000.0})), (DownMarket({}), FakeClient({"USDT": 6000.0}))):
+        t2 = make_trader(env, m, c)
+        with pytest.raises(ConnectionError):
+            await t2.start()
+        await t2.close()
+        assert (env / "state.json").read_text() == good
+
+
+@pytest.mark.asyncio
+async def test_incomplete_state_refuses_clearly(env: Path) -> None:
+    (env / "state.json").write_text('{"sleeves": {}, "last_loop_at": "2026-10-10T00:00:00+00:00"}')
+    t = make_trader(env, FakeMarket({"SOL-USDT": FLAT, "XRP-USDT": FLAT}), FakeClient({"USDT": 6000.0}))
+    with pytest.raises(SystemExit, match="incomplete"):
+        await t.start()
+    await t.close()
+    assert "last_loop_at" in (env / "state.json").read_text() and "config" not in (env / "state.json").read_text()

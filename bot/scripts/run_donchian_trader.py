@@ -64,6 +64,9 @@ UNKNOWN_ORDER_GRACE_S = 15 * 60  # an order OKX never heard of after this long i
 # --------------------------------------------------------------------------- #
 
 
+REQUIRED_STATE_KEYS = frozenset({"config", "baseline", "sleeves", "handled_bar", "pending", "trades", "equity_history", "alerts_sent"})
+
+
 def load_state(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -147,6 +150,7 @@ class Trader:
         self.notify = Notifier()
         self.specs: dict[str, dict[str, float]] = {}
         self.state: dict[str, Any] = {}
+        self._started = False  # state is only ever written after start() fully succeeded
         self.sleeves: dict[str, Sleeve] = {}
 
     # ---------------- setup ----------------
@@ -186,9 +190,15 @@ class Trader:
             add_event(event="donchian_initialised", strategy=STRATEGY,
                       message=f"fresh state: {len(self.pairs)} sleeves × ${per:,.0f}; baseline holdings excluded {baseline}",
                       details={"baseline": baseline})
+        missing = sorted(REQUIRED_STATE_KEYS - self.state.keys())
+        unknown = sorted(set(self.pairs) - set(self.state.get("sleeves", {})))
+        if missing or unknown:
+            raise SystemExit(f"state file {self.state_path} is incomplete (missing keys {missing}, sleeves {unknown}); "
+                             "move it aside and reconcile manually")
         self.state["config"]["poll_seconds"] = self.args.poll_seconds
         self.sleeves = {k: Sleeve.from_dict(v) for k, v in self.state["sleeves"].items()}
         save_state(self.state_path, self.state)
+        self._started = True
         add_event(event="donchian_started", strategy=STRATEGY,
                   message=f"trader started ({settings.OKX_MODE}) for {', '.join(self.pairs)}",
                   details=self.state["config"])
@@ -382,7 +392,8 @@ class Trader:
         self._persist()
 
     async def close(self) -> None:
-        self._persist()
+        if self._started:  # a failed start must never overwrite the file with a half-built state
+            self._persist()
         await self.market.close()
         await self.client.close()
         await self.notify.close()
